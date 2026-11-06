@@ -1,0 +1,168 @@
+/* Script Builder — plain, big, phone-first. No framework, no backend. */
+* { box-sizing: border-box; }
+:root {
+  --ink: #1a1a1a; --muted: #666; --line: #ddd; --bg: #f6f4ef;
+  --card: #fff; --accent: #1f5c3d; --accent2: #e8f0e9; --warn: #8a5a00;
+  --radius: 12px;
+}
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg); color: var(--ink); font-size: 18px; line-height: 1.5;
+}
+header.top {
+  background: var(--ink); color: #fff; padding: 14px 16px; position: sticky; top: 0; z-index: 10;
+}
+header.top h1 { margin: 0; font-size: 20px; }
+header.top p { margin: 2px 0 0; font-size: 14px; color: #ccc; }
+main { max-width: 760px; margin: 0 auto; padding: 16px 14px 120px; }
+.card { background: var(--card); border: 1.5px solid #bbb; border-top: 4px solid #c0392b; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+h2 { font-size: 22px; margin: 0 0 6px; }
+h3 { font-size: 18px; margin: 18px 0 8px; }
+p.sub { color: var(--muted); margin: 0 0 12px; }
+label { display: block; font-weight: 700; font-size: 15px; margin: 14px 0 5px; }
+label .hint { display: block; font-weight: 400; color: var(--muted); font-size: 14px; margin-top: 2px; }
+input[type=text], input[type=date], input[type=number], select, textarea {
+  width: 100%; font-size: 18px; padding: 12px; border: 1.5px solid #999;
+  border-radius: 10px; background: #fff; color: var(--ink); font-family: inherit;
+}
+textarea { min-height: 84px; resize: vertical; line-height: 1.5; }
+textarea.draft { min-height: 220px; font-family: "Courier New", Courier, monospace; font-size: 16px; }
+input:focus, select:focus, textarea:focus { outline: 3px solid #9ec5ab; border-color: var(--accent); }
+button, .btn {
+  font-size: 18px; font-weight: 700; padding: 13px 18px; border-radius: 10px;
+  border: 1.5px solid var(--ink); background: #fff; color: var(--ink);
+  cursor: pointer; min-height: 52px; font-family: inherit;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.ghost { border-color: #bbb; color: var(--muted); }
+button.small { font-size: 15px; padding: 9px 12px; min-height: 42px; }
+button:disabled { opacity: .45; cursor: default; }
+.btnrow { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.btnrow .spacer { flex: 1; }
+.nav-bottom {
+  position: fixed; left: 0; right: 0; bottom: 0; background: #fff;
+  border-top: 1px solid var(--line); padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  display: flex; gap: 10px; max-width: 760px; margin: 0 auto; z-index: 10;
+}
+.nav-bottom button { flex: 1; }
+.progress { height: 10px; background: #e3e0d8; border-radius: 6px; overflow: hidden; margin: 8px 0 4px; }
+.progress > div { height: 100%; background: var(--accent); width: 0%; }
+.pill { display: inline-block; font-size: 13px; font-weight: 700; padding: 3px 9px; border-radius: 20px; background: var(--accent2); color: var(--accent); }
+.pill.done { background: var(--accent); color: #fff; }
+.script-row { display: flex; gap: 10px; align-items: stretch; width: 100%; text-align: left; padding: 14px; margin-bottom: 10px; background: #fff; border: 1.5px solid var(--line); border-radius: var(--radius); }
+.script-row .open { display: flex; gap: 10px; align-items: flex-start; flex: 1; min-width: 0; background: none; border: 0; padding: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; min-height: 0; }
+.script-row .rowactions { display: flex; flex-direction: column; gap: 6px; justify-content: center; flex: 0 0 auto; }
+.script-row .num { font-size: 24px; font-weight: 800; color: var(--accent); min-width: 34px; }
+.script-row .body { flex: 1; }
+.script-row .t { font-weight: 800; font-size: 18px; }
+.script-row .m { color: var(--muted); font-size: 14px; margin-top: 2px; }
+.script-row .go { font-size: 22px; color: var(--muted); }
+.stepdots { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 4px; }
+.stepdots span { font-size: 12px; font-weight: 700; padding: 5px 9px; border-radius: 20px; background: #eee; color: var(--muted); }
+.stepdots span.on { background: var(--accent); color: #fff; }
+.stepdots span.done { background: #cfe3d2; color: var(--accent); }
+.scene { border: 1.5px solid #bbb; border-top: 4px solid #c0392b; border-left: 5px solid var(--accent); border-radius: 10px; padding: 14px; margin-bottom: 12px; background: #fff; }
+.scene .head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.scene .head b { font-size: 16px; }
+.scene .beat { font-size: 13px; color: var(--muted); font-weight: 700; }
+.scene .pages { font-size: 13px; color: var(--muted); }
+.scene label { margin-top: 10px; }
+.checkrow { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-weight: 700; }
+.checkrow input { width: 26px; height: 26px; accent-color: var(--accent); }
+.rule { color: var(--warn); background: #fdf3d7; border: 1px solid #e8c96a; border-radius: 10px; padding: 12px; margin: 12px 0; }
+.saved { color: var(--accent); font-size: 14px; font-weight: 700; }
+.muted { color: var(--muted); font-size: 14px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
+.stat { font-size: 15px; }
+.stat b { font-size: 20px; }
+/* One card at a time: pager + tap-to-jump chips */
+.pager { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin: 12px 0; }
+.pager button { flex: 0 0 auto; min-width: 96px; }
+.pager .mid { font-weight: 800; font-size: 16px; text-align: center; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.chips.scroll { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 6px; -webkit-overflow-scrolling: touch; }
+.chips button { min-width: 46px; min-height: 46px; padding: 6px 10px; font-size: 16px; }
+.chips button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* Scene tags */
+.tagpill { display: inline-block; font-size: 14px; font-weight: 700; background: #fff3cd; border: 1.5px solid #d9a400; color: #6b4e00; padding: 4px 10px; border-radius: 20px; margin: 8px 0 2px; }
+.tagrow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tagrow label { margin-top: 10px; }
+@media (max-width: 520px) { .tagrow { grid-template-columns: 1fr; } }
+.resume { font-weight: 800; color: var(--accent); }
+.script-row .progress { height: 8px; margin: 8px 0 2px; }
+/* Writing view: scene notes + screenplay blocks */
+.slugline { font-family: "Courier New", Courier, monospace; font-weight: 700; font-size: 18px; margin: 10px 0 4px; }
+.notes { background: #fffbe6; border: 1.5px solid #d9c25a; border-radius: 10px; padding: 12px; margin: 12px 0; }
+.notes h3 { margin: 12px 0 4px; font-size: 16px; }
+.notes h3:first-child { margin-top: 0; }
+.notes p { margin: 6px 0; }
+.notes .now { background: #ffe9a8; padding: 2px 6px; border-radius: 6px; font-weight: 700; }
+.blocks { margin-top: 12px; }
+.block { margin-bottom: 10px; }
+.blockbar { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.block textarea { font-family: "Courier New", Courier, monospace; font-size: 16px; min-height: 64px; }
+.b-character textarea { text-align: center; text-transform: uppercase; font-weight: 700; }
+.b-dialogue textarea { margin-left: 12%; width: 88%; }
+.b-paren textarea { margin-left: 22%; width: 56%; }
+.b-transition textarea { text-align: right; text-transform: uppercase; font-weight: 700; }
+#print-view { display: none; }
+#preview-bar { display: none; }
+footer { text-align: center; color: var(--muted); font-size: 13px; padding: 20px; }
+
+/* ---- Print preview on screen: pages look like paper ---- */
+body.show-print main, body.show-print header.top, body.show-print .nav-bottom { display: none; }
+body.show-print #preview-bar {
+  display: flex; gap: 10px; align-items: center; position: sticky; top: 0; z-index: 20;
+  background: var(--ink); color: #fff; padding: 12px 14px; font-size: 15px;
+}
+body.show-print #preview-bar span { flex: 1; }
+body.show-print #print-view { display: block; background: #ddd; padding: 16px 8px 40px; }
+body.show-print #print-view .sp-page {
+  width: 8.5in; min-height: 11in; margin: 0 auto 20px; padding: 1in 1in 1in 1.5in;
+  background: #fff; border: 1px solid #999; box-shadow: 0 2px 10px rgba(0,0,0,.25);
+  position: relative; box-sizing: border-box;
+}
+body.show-print #print-view .sp-pagenum { position: absolute; top: 0.5in; right: 1in; }
+
+/* ---- Industry-standard screenplay type: Courier 12pt, single spaced.
+   Shared by the on-screen preview and the printed pages. ---- */
+#print-view.script-print, #print-view.script-print p {
+  font-family: "Courier New", Courier, monospace; font-size: 12pt; line-height: 12pt;
+}
+#print-view.script-print p { margin: 0; }
+#print-view.script-print .sp-heading { text-transform: uppercase; }
+#print-view.script-print .sp-action { }
+#print-view.script-print .sp-char { margin-left: 2.2in; text-transform: uppercase; }
+#print-view.script-print .sp-dia { margin-left: 1in; width: 3.5in; }
+#print-view.script-print .sp-paren { margin-left: 1.6in; }
+#print-view.script-print .sp-trans { text-align: right; text-transform: uppercase; }
+#print-view.script-print .sp-fade { text-transform: uppercase; }
+#print-view.script-print .sp-center { text-align: center; text-transform: uppercase; }
+#print-view.script-print .sp-title { text-align: center; text-transform: uppercase; margin-top: 2in; }
+#print-view.script-print .sp-byline { text-align: center; margin-top: 12pt; }
+#print-view.script-print .sp-pagenum { font-size: 12pt; }
+
+/* ---- Print: US Letter, 1in top/bottom/right, 1.5in left margins ---- */
+@page { size: Letter; margin: 1in 1in 1in 1.5in; }
+@media print {
+  header.top, .nav-bottom, main, footer, .noprint, #preview-bar { display: none !important; }
+  body { background: #fff; }
+  #print-view { display: block !important; color: #000; }
+  /* Outline print — plain document by act/scene, not screenplay format. */
+  #print-view.outline-print h1 { font-size: 20pt; margin: 0 0 4px; }
+  #print-view.outline-print h2 { font-size: 15pt; margin: 18px 0 6px; border-bottom: 2px solid #000; padding-bottom: 3px; }
+  #print-view.outline-print h3 { font-size: 12pt; margin: 12px 0 3px; }
+  #print-view.outline-print p, #print-view.outline-print li { font-size: 11pt; line-height: 1.4; }
+  #print-view.outline-print .pscene { margin: 0 0 10px; page-break-inside: avoid; }
+  #print-view.outline-print .pscene .slug { font-family: "Courier New", monospace; font-weight: 700; }
+  #print-view.outline-print .drafttext { font-family: "Courier New", monospace; font-size: 11pt; white-space: pre-wrap; }
+  #print-view.outline-print .pagebreak { page-break-before: always; }
+  /* Script print — one .sp-page per physical page. Page 1 has no number;
+     numbering starts on page 2, top right, as "2." — industry standard. */
+  #print-view.script-print .sp-page { width: 6in; margin: 0; padding: 0; border: 0; position: relative; page-break-after: always; }
+  #print-view.script-print .sp-page:last-child { page-break-after: auto; }
+  #print-view.script-print .sp-pagenum { position: absolute; top: -0.5in; right: 0; }
+  #print-view.script-print .title-page { page-break-after: always; }
+}

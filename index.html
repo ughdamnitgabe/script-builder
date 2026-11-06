@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Script Builder — a free, simple step-by-step worksheet for writing scripts. No account, no server. Your work stays on your device.">
+<title>Script Builder — My Scripts</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <h1>🎬 Script Builder</h1>
+  <p>Every script. One card at a time. Nothing fancy.</p>
+</header>
+
+<main id="app">
+  <!-- ============ HOME / SCRIPT LIST ============ -->
+  <section id="view-list">
+    <div class="card">
+      <h2>My Scripts</h2>
+      <p class="sub">Tap a script to open it. Everything you type saves on this device automatically — no account, no internet needed after the page loads.</p>
+      <p class="stat">Scripts: <b id="stat-total">0</b> &nbsp;·&nbsp; Draft done: <b id="stat-done">0</b> &nbsp;·&nbsp; Outline done: <b id="stat-outline">0</b> &nbsp;·&nbsp; Pages drafted: <b id="stat-pages">0</b></p>
+      <div class="progress"><div id="stat-bar"></div></div>
+      <div class="btnrow">
+        <button class="small" id="btn-export" type="button">⬇ Export backup</button>
+        <button class="small" id="btn-import" type="button">⬆ Import backup</button>
+        <input type="file" id="import-file" accept=".json,application/json" hidden>
+        <button class="small ghost" id="btn-reset-all" type="button">Reset all</button>
+      </div>
+      <p class="muted">Feature, TV pilot, or streaming — pick a structure when you start a script, fill in one card at a time, write the draft, print it. Target: 80–90 pages for a feature, ~30 for a 30-min pilot, ~60 for an hour.</p>
+    </div>
+    <div id="script-list"></div>
+    <footer>Free forever — plain HTML/CSS/JS. Works on iPhone, Android, laptop. Print from any browser.</footer>
+  </section>
+
+  <!-- ============ WIZARD ============ -->
+  <section id="view-wizard" hidden>
+    <div class="card">
+      <button class="small ghost noprint" id="btn-back-list" type="button">← All scripts</button>
+      <h2 id="wiz-title">Script 1</h2>
+      <p class="sub" id="wiz-meta"></p>
+      <div class="progress"><div id="wiz-bar"></div></div>
+      <p class="muted"><span id="wiz-progress-text"></span> &nbsp;·&nbsp; <span class="saved" id="saved-note">Saved on this device</span></p>
+      <div class="stepdots" id="step-dots"></div>
+      <div class="btnrow noprint">
+        <button class="small" id="btn-goto-outline" type="button">📄 Outline</button>
+        <button class="small" id="btn-goto-draft" type="button">✍️ Draft</button>
+        <span class="spacer"></span>
+        <span class="pill" id="script-status-pill">Not started</span>
+      </div>
+    </div>
+    <div id="step-body"></div>
+  </section>
+</main>
+
+<!-- Bottom Next / Back bar (wizard only) -->
+<nav class="nav-bottom noprint" id="nav-bottom" hidden>
+  <button id="btn-prev" type="button">← Back</button>
+  <button class="primary" id="btn-next" type="button">Next →</button>
+</nav>
+
+<!-- Print preview bar (shown on screen when previewing) -->
+<div id="preview-bar" hidden>
+  <button id="btn-close-preview" type="button">✕ Close preview</button>
+  <span>Preview — this is how the pages will look on paper.</span>
+  <button id="btn-preview-print" type="button" class="primary">🖨 Print</button>
+</div>
+
+<!-- Print-only output is built here by app.js -->
+<div id="print-view"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
