@@ -127,7 +127,7 @@ function blankScript(n) {
 function seed() {
   /* The library starts empty — tap ＋ New Script to start the first one.
      No preset list, no dates, no cap. */
-  return { scripts: [] };
+  return { scripts: [], updatedAt: '' };
 }
 /* Suggested scene counts per act, scaled to however many scenes exist now. */
 function suggestedCounts(total, n) {
@@ -142,6 +142,7 @@ function suggestedCounts(total, n) {
 /* Fill in any fields older saves don't have, so an update never wipes work. */
 function normalize(db) {
   if (!db || !Array.isArray(db.scripts)) return seed();
+  if (typeof db.updatedAt !== 'string') db.updatedAt = '';
   if (!db.scripts.length) return db; /* an empty library is a valid state */
   delete db.startDate; /* old saves carried a year start date — no longer used */
   var seenIds = {};
@@ -218,6 +219,14 @@ function save() {
   if (note) note.textContent = 'Saved on this device · ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   scheduleCloudPush();
 }
+/* Stamp the library itself with "last changed here" — the clock the
+   auto-sync uses for last-write-wins. Only ever called from real edit
+   paths (typing, structural changes), never from navigation, so merely
+   opening a script or returning home can never make this device look
+   newer than it is. */
+function touchLocal() {
+  DB.updatedAt = new Date().toISOString();
+}
 
 /* ---------------- cloud sync (Supabase, optional) ----------------
    The app is fully usable without it: localStorage is the offline cache
@@ -233,13 +242,23 @@ function save() {
    - No password is ever stored. Only the Supabase session (access +
      refresh token) is kept, under SB_SESSION_KEY, so sign-in survives
      a reload on that device. Sign out clears it.
-   Sync rules (decideSync, pure + tested in smoke6):
+   Sync rules (decideSync, pure + tested in smoke6/8) — last-write-wins:
    - cloud empty + local has scripts -> push local up
    - cloud has scripts + local empty -> pull cloud down
    - both non-empty and identical -> nothing to do
-   - both non-empty and different -> STOP and ask; never overwrite
-     either side silently, and never overwrite non-empty data with
-     empty data.
+   - both non-empty and different -> the newer copy wins, by timestamp
+     (cloud row updated_at, else the newest script updatedAt on that
+     side): cloud newer -> pull automatically, local newer -> push
+     automatically. Only when the timestamps are missing, tied, or
+     unreadable does the app stop and ask — never overwrite either
+     side silently, and never overwrite non-empty data with empty data.
+   - Re-checks run automatically (no Sync Now press needed): on load,
+     on sign-in, when the app regains focus / becomes visible, and
+     when you return to the home screen. A pull never swaps the
+     library out from under an open script — while you're editing,
+     the app pushes your work first and waits for you to leave that
+     screen. Closing the app flushes any pending push right away
+     (pagehide / hidden) and never signs you out.
    Shared-device rule (per-user local caches, tested in smoke7):
    LS_KEY holds the library currently on screen; who it belongs to is
    recorded under LS_OWNER_KEY (a user id, '' for the signed-out
@@ -269,12 +288,13 @@ function loadCloudSession() {
 }
 var cloudSession = loadCloudSession();
 var cloudUser = cloudSession ? { id: cloudSession.user_id, email: cloudSession.email || '' } : null;
-var cloudState = cloudUser ? 'local' : 'off'; /* off|saving|synced|local|error|choosing */
+var cloudState = cloudUser ? 'local' : 'off'; /* off|saving|synced|local|error|choosing|claim|pulled */
 var cloudLastSync = null;
 var cloudPushHandle = null;
 var cloudBusy = false;
 var cloudPushPending = false;
 var cloudSuppressPush = false;
+var localUnsynced = false; /* a local edit has not reached the cloud yet */
 var pendingCloud = null; /* {db, updatedAt} — the cloud copy awaiting a choice */
 var pendingClaim = null; /* {db, kind} — an unclaimed local library awaiting an answer */
 
@@ -404,21 +424,47 @@ function latestUpdated(db) {
   db.scripts.forEach(function (s) { if (s.updatedAt && s.updatedAt > best) best = s.updatedAt; });
   return best;
 }
-/* Pure merge decision. Returns {action, localCount, cloudCount}.
-   'push' and 'pull' only ever carry non-empty data to an empty side. */
-function decideSync(localDB, cloudDB) {
+/* Parse an ISO timestamp to milliseconds, or 0 when it is missing or
+   unreadable. 0 means "this side has no usable clock" — never a date. */
+function parseSyncTime(s) {
+  var t = Date.parse(s || '');
+  return isNaN(t) ? 0 : t;
+}
+/* When was this library last changed, on this side? The library stamp
+   (set by touchLocal on real edits) is the clock — it wins over script
+   stamps, because merely opening a script also stamps the script and
+   must never make a device look newer. Script stamps are only the
+   fallback for libraries written before the library stamp existed. */
+function localSyncTime(db) {
+  return parseSyncTime(db && db.updatedAt) || parseSyncTime(latestUpdated(db));
+}
+function cloudSyncTime(cloudDB, cloudUpdatedAt) {
+  return parseSyncTime(cloudUpdatedAt) || parseSyncTime(cloudDB && cloudDB.updatedAt) || parseSyncTime(latestUpdated(cloudDB));
+}
+/* Pure merge decision. Returns {action, localCount, cloudCount, reason}.
+   'push' and 'pull' only ever carry non-empty data to an empty side, or
+   the newer copy over the older one. 'choose' is only for timestamps
+   that are missing on either side, tied, or unreadable. */
+function decideSync(localDB, cloudDB, cloudUpdatedAt) {
   var lc = scriptCount(localDB), cc = scriptCount(cloudDB);
-  if (lc === 0 && cc === 0) return { action: 'none', localCount: lc, cloudCount: cc };
-  if (cc === 0 && lc > 0) return { action: 'push', localCount: lc, cloudCount: cc };
-  if (lc === 0 && cc > 0) return { action: 'pull', localCount: lc, cloudCount: cc };
-  if (JSON.stringify(localDB) === JSON.stringify(cloudDB)) return { action: 'none', localCount: lc, cloudCount: cc };
-  return { action: 'choose', localCount: lc, cloudCount: cc };
+  if (lc === 0 && cc === 0) return { action: 'none', localCount: lc, cloudCount: cc, reason: 'both-empty' };
+  if (cc === 0 && lc > 0) return { action: 'push', localCount: lc, cloudCount: cc, reason: 'cloud-empty' };
+  if (lc === 0 && cc > 0) return { action: 'pull', localCount: lc, cloudCount: cc, reason: 'local-empty' };
+  if (JSON.stringify(localDB) === JSON.stringify(cloudDB)) return { action: 'none', localCount: lc, cloudCount: cc, reason: 'identical' };
+  var lt = localSyncTime(localDB), ct = cloudSyncTime(cloudDB, cloudUpdatedAt);
+  if (lt > 0 && ct > 0) {
+    if (ct > lt) return { action: 'pull', localCount: lc, cloudCount: cc, reason: 'cloud-newer' };
+    if (lt > ct) return { action: 'push', localCount: lc, cloudCount: cc, reason: 'local-newer' };
+    return { action: 'choose', localCount: lc, cloudCount: cc, reason: 'tied' };
+  }
+  return { action: 'choose', localCount: lc, cloudCount: cc, reason: 'undecided' };
 }
 function cloudStatusMessage(state, when) {
   if (state === 'off') return 'Cloud sync off — you\u2019re signed out';
   if (state === 'saving') return 'Saving to cloud\u2026';
   if (state === 'synced') return when ? 'Saved to cloud ' + when : 'Saved to cloud';
   if (state === 'local') return 'Saved on this device \u2014 cloud unreachable, will retry';
+  if (state === 'pulled') return 'Newer copy from the cloud \u2014 loaded';
   if (state === 'choosing') return 'Cloud and this device both have scripts \u2014 pick one below';
   if (state === 'claim') return 'This device already has scripts \u2014 are they yours? Pick below';
   return 'Cloud sync had a problem \u2014 your work is still saved on this device';
@@ -468,7 +514,10 @@ function sbFetch(path, opts) {
   var headers = { apikey: SB_ANON, 'Content-Type': 'application/json' };
   if (cloudSession && cloudSession.access_token) headers.Authorization = 'Bearer ' + cloudSession.access_token;
   if (opts.headers) Object.keys(opts.headers).forEach(function (k) { headers[k] = opts.headers[k]; });
-  return fetch(SB_URL + path, { method: opts.method || 'GET', headers: headers, body: opts.body }).then(function (res) {
+  var req = { method: opts.method || 'GET', headers: headers, body: opts.body };
+  /* keepalive lets a close flush finish as the page goes away. */
+  if (opts.keepalive) req.keepalive = true;
+  return fetch(SB_URL + path, req).then(function (res) {
     return res.text().then(function (txt) {
       var data = null;
       try { data = txt ? JSON.parse(txt) : null; } catch (e) { data = null; }
@@ -512,11 +561,12 @@ function fetchCloudRow() {
       return { db: db, updatedAt: row.updated_at || '' };
     });
 }
-function pushCloudRow() {
+function pushCloudRow(keepalive) {
   if (!cloudUser) return Promise.reject(new Error('not signed in'));
   var body = { user_id: cloudUser.id, data: DB, updated_at: new Date().toISOString() };
   return sbFetch('/rest/v1/script_libraries', {
     method: 'POST',
+    keepalive: !!keepalive,
     headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
     body: JSON.stringify(body)
   });
@@ -535,18 +585,39 @@ function showConflict(localDB, cloud) {
   setCloudStatus('choosing');
   renderCloudAuth();
 }
-function applyCloudDB(db) {
+/* Replace the on-screen library with the cloud copy. auto=true means
+   the sync itself decided the cloud is newer (sign-in / load / focus
+   re-check) — say so plainly. Without it, the user chose the cloud
+   copy in the conflict panel, and the status reads as a save. */
+function applyCloudDB(db, auto) {
   cloudSuppressPush = true;
   try {
     DB = normalize(JSON.parse(JSON.stringify(db)));
     save();
   } finally { cloudSuppressPush = false; }
   pendingCloud = null;
-  setCloudStatus('synced');
+  localUnsynced = false;
+  setCloudStatus(auto ? 'pulled' : 'synced');
   renderList();
 }
+/* Shared sync-failure handling for initialSync / syncAfterClaim: an
+   expired session signs out (manual sign-in again); anything else just
+   leaves the local copy safe and the session alone. */
+function handleSyncError(err) {
+  cloudBusy = false;
+  if (err && err.status === 401) {
+    clearCloudSession();
+    setCloudStatus('off');
+    renderCloudAuth();
+    var msg = document.getElementById('cloud-auth-msg');
+    if (msg) msg.textContent = 'Your sign-in expired \u2014 sign in again.';
+    return;
+  }
+  /* Network / cloud unreachable: local work is safe, stay signed in. */
+  setCloudStatus('local');
+}
 function initialSync() {
-  if (!cloudUser || cloudBusy) return Promise.resolve();
+  if (!cloudUser || cloudBusy || pendingClaim) return Promise.resolve();
   cloudBusy = true;
   setCloudStatus('saving');
   return fetchCloudRow().then(function (cloud) {
@@ -556,24 +627,34 @@ function initialSync() {
       if (isEmptyDB(DB)) { setCloudStatus('synced'); return; }
       return pushCloud();
     }
-    var decision = decideSync(DB, cloud.db);
+    var decision = decideSync(DB, cloud.db, cloud.updatedAt);
     if (decision.action === 'push') return pushCloud();
-    if (decision.action === 'pull') { applyCloudDB(cloud.db); return; }
+    if (decision.action === 'pull') { applyCloudDB(cloud.db, true); return; }
     if (decision.action === 'choose') { showConflict(DB, cloud); return; }
     setCloudStatus('synced');
-  }).catch(function (err) {
+  }).catch(handleSyncError);
+}
+/* Sync right after the user answered "Yes, these scripts are mine" to
+   the claim question. Same last-write-wins decision — except a newer
+   cloud copy does NOT silently pull over the library they just claimed:
+   that goes to the conflict chooser instead, so the Yes stays honest. */
+function syncAfterClaim() {
+  if (!cloudUser || cloudBusy) return Promise.resolve();
+  cloudBusy = true;
+  setCloudStatus('saving');
+  return fetchCloudRow().then(function (cloud) {
     cloudBusy = false;
-    if (err && err.status === 401) {
-      clearCloudSession();
-      setCloudStatus('off');
-      renderCloudAuth();
-      var msg = document.getElementById('cloud-auth-msg');
-      if (msg) msg.textContent = 'Your sign-in expired \u2014 sign in again.';
-      return;
+    if (!cloud || !cloud.db) {
+      if (isEmptyDB(DB)) { setCloudStatus('synced'); return; }
+      return pushCloud();
     }
-    /* Network / cloud unreachable: local work is safe, stay signed in. */
-    setCloudStatus('local');
-  });
+    var decision = decideSync(DB, cloud.db, cloud.updatedAt);
+    if (decision.action === 'push') return pushCloud();
+    if (decision.action === 'none') { setCloudStatus('synced'); return; }
+    /* pull or choose: ask, don't silently pull the cloud over the
+       library the user just said was theirs. */
+    showConflict(DB, cloud);
+  }).catch(handleSyncError);
 }
 function pushCloud() {
   if (!cloudUser || cloudBusy) { if (cloudUser) cloudPushPending = true; return Promise.resolve(); }
@@ -582,6 +663,7 @@ function pushCloud() {
   var run = function () {
     return pushCloudRow().then(function () {
       cloudBusy = false;
+      localUnsynced = false;
       setCloudStatus('synced');
       if (cloudPushPending) { cloudPushPending = false; return pushCloud(); }
     });
@@ -604,8 +686,48 @@ function pushCloud() {
 }
 function scheduleCloudPush() {
   if (!cloudUser || cloudSuppressPush) return;
+  localUnsynced = true;
   if (cloudPushHandle) clearTimeout(cloudPushHandle);
   cloudPushHandle = setTimeout(function () { cloudPushHandle = null; pushCloud(); }, CLOUD_DEBOUNCE_MS);
+}
+/* Automatic re-check for an app that is already signed in and open:
+   run it when the app regains focus, becomes visible, or you return
+   to the home screen. Never swaps the library out from under an open
+   script — while you're editing, your work goes up first and the pull
+   waits until you leave that screen. */
+function recheckCloud() {
+  if (!cloudUser || cloudBusy || pendingClaim || cloudState === 'choosing' || cloudState === 'claim') return Promise.resolve();
+  if (cloudPushHandle) {
+    /* An edit is still inside its ~2s debounce: push it first, then
+       re-check — the local edit is the newest write, so it wins. */
+    clearTimeout(cloudPushHandle);
+    cloudPushHandle = null;
+    return pushCloud().then(function () { return recheckCloud(); });
+  }
+  if (localUnsynced) {
+    return pushCloud().then(function () { return recheckCloud(); });
+  }
+  var list = document.getElementById('view-list');
+  if (!list || list.hidden) return Promise.resolve(); /* mid-edit: wait for home */
+  return initialSync();
+}
+/* Save on close: if a cloud push is still waiting out its ~2s debounce
+   when the app is closed or hidden, push it right away instead. The
+   local save already happened on every keystroke — this only gets that
+   last edit to the cloud. keepalive lets the request finish as the
+   page goes away. If it fails, nothing destructive happens: the local
+   copy stays safe, the session stays signed in, and the next open
+   pushes it then. Never signs the user out. */
+function flushCloudPushOnClose() {
+  if (!cloudUser || cloudBusy) return;
+  if (!cloudPushHandle && !localUnsynced) return;
+  if (cloudPushHandle) { clearTimeout(cloudPushHandle); cloudPushHandle = null; }
+  /* The next load re-derives "newer" from timestamps, so clearing the
+     pending flag here is safe even if this flush fails. */
+  localUnsynced = false;
+  pushCloudRow(true).then(function () {
+    if (!cloudBusy) setCloudStatus('synced');
+  }).catch(function () { /* offline / unreachable: local copy stays safe */ });
 }
 function initCloud() {
   renderCloudAuth();
@@ -639,7 +761,10 @@ function initCloud() {
 if (typeof window !== 'undefined') {
   window.__scriptBuilderSync = {
     decideSync: decideSync, isEmptyDB: isEmptyDB, scriptCount: scriptCount,
+    latestUpdated: latestUpdated, parseSyncTime: parseSyncTime,
+    localSyncTime: localSyncTime, cloudSyncTime: cloudSyncTime,
     cloudStatusMessage: cloudStatusMessage, SB_URL: SB_URL,
+    recheckCloud: recheckCloud, flushCloudPushOnClose: flushCloudPushOnClose,
     stashKeyFor: stashKeyFor, signedOutKey: LS_SIGNEDOUT_KEY,
     legacyKey: LS_LEGACY_KEY, legacyBackupKey: LS_LEGACY_BACKUP_KEY,
     ownerKey: LS_OWNER_KEY,
@@ -660,7 +785,9 @@ function nextId() {
 function newScript() {
   var s = blankScript(nextId());
   for (var i = 0; i < 42; i++) s.scenes.push(blankScene());
+  s.updatedAt = new Date().toISOString();
   DB.scripts.push(s);
+  touchLocal();
   save();
   openScript(s.id);
 }
@@ -671,15 +798,17 @@ function duplicateScript(id) {
   var copy = JSON.parse(JSON.stringify(src));
   copy.id = nextId();
   copy.title = (src.title || 'Untitled') + ' (copy)';
-  copy.updatedAt = '';
+  copy.updatedAt = new Date().toISOString();
   copy.pos = { step: 0, act1: 0, act2: 0, act3: 0, act4: 0, act5: 0, char: 0, draft: 0 };
   DB.scripts.push(copy);
+  touchLocal();
   save();
   renderList();
 }
 function deleteScript(id) {
   if (!confirm('Delete this script? Its outline and draft go with it. Export a backup first if you want to keep it.')) return;
   DB.scripts = DB.scripts.filter(function (x) { return x.id !== id; });
+  touchLocal();
   save();
   renderList();
 }
@@ -726,6 +855,7 @@ function actScenes(s, actNum) {
 }
 function setActs(s, n) {
   if (n === s.acts) return;
+  touchLocal();
   s.acts = n;
   s.actCounts = suggestedCounts(s.scenes.length, n);
   var steps = wizardSteps(s);
@@ -1498,6 +1628,7 @@ function addSceneAt(pos, actNum) {
   s.scenes.splice(pos, 0, blankScene());
   s.actCounts[actNum - 1]++;
   s.pos['act' + actNum] = pos - actStart(s, actNum);
+  touchLocal();
   save(); renderStep();
 }
 function deleteScene(idx) {
@@ -1509,6 +1640,7 @@ function deleteScene(idx) {
   s.actCounts[act - 1] = Math.max(0, s.actCounts[act - 1] - 1);
   var key = 'act' + act;
   s.pos[key] = Math.max(0, Math.min((s.actCounts[act - 1] || 1) - 1, s.pos[key] || 0));
+  touchLocal();
   save(); renderStep();
 }
 function moveScene(idx, dir) {
@@ -1517,6 +1649,7 @@ function moveScene(idx, dir) {
   var tmp = s.scenes[idx]; s.scenes[idx] = s.scenes[j]; s.scenes[j] = tmp;
   var act = actOf(s, j);
   s.pos['act' + act] = j - actStart(s, act);
+  touchLocal();
   save(); renderStep();
 }
 
@@ -1525,6 +1658,7 @@ function handleSceneField(el, rerender) {
   var s = cur(), idx = parseInt(el.dataset.scene, 10), f = el.dataset.field;
   if (el.type === 'checkbox') s.scenes[idx][f] = el.checked;
   else s.scenes[idx][f] = el.value;
+  touchLocal();
   save();
   /* Re-render only on blur/change — re-rendering on every keystroke
      would drop the cursor while typing. */
@@ -1533,19 +1667,20 @@ function handleSceneField(el, rerender) {
 function handleBlockField(el) {
   var parts = el.dataset.block.split(':'), idx = parseInt(parts[0], 10), bi = parseInt(parts[1], 10);
   cur().scenes[idx].blocks[bi].x = el.value;
+  touchLocal();
   save();
   updateDraftTotals();
 }
 document.addEventListener('input', function (e) {
   var el = e.target;
-  if (el.dataset.path) { setPath(cur(), el.dataset.path, el.value); save(); }
+  if (el.dataset.path) { setPath(cur(), el.dataset.path, el.value); touchLocal(); save(); }
   if (el.dataset.scene) handleSceneField(el, false);
   if (el.dataset.block) handleBlockField(el);
   if (el.tagName === 'TEXTAREA') growTextarea(el);
 });
 document.addEventListener('change', function (e) {
   var el = e.target;
-  if (el.dataset.path) { setPath(cur(), el.dataset.path, el.value); save(); renderStep(); }
+  if (el.dataset.path) { setPath(cur(), el.dataset.path, el.value); touchLocal(); save(); renderStep(); }
   if (el.dataset.scene) handleSceneField(el, true);
 });
 document.addEventListener('click', function (e) {
@@ -1553,10 +1688,10 @@ document.addEventListener('click', function (e) {
   if (!el) return;
   var s = cur();
   if (el.dataset.open) { openScript(parseInt(el.dataset.open, 10)); return; }
-  if (el.id === 'btn-back-list') { save(); renderList(); return; }
+  if (el.id === 'btn-back-list') { save(); renderList(); recheckCloud(); return; }
   if (el.id === 'btn-prev') { if (currentStep > 0) { currentStep--; renderStep(); } return; }
   if (el.id === 'btn-next') {
-    if (currentStep >= wizardSteps(s).length - 1) { save(); renderList(); }
+    if (currentStep >= wizardSteps(s).length - 1) { save(); renderList(); recheckCloud(); }
     else { currentStep++; renderStep(); }
     return;
   }
@@ -1594,6 +1729,7 @@ document.addEventListener('click', function (e) {
   if (el.dataset.addblock) {
     var idx = parseInt(el.dataset.idx, 10);
     s.scenes[idx].blocks.push({ t: el.dataset.addblock, x: '' });
+    touchLocal();
     save(); renderStep();
     var tas = document.querySelectorAll('#blocks textarea');
     if (tas.length) tas[tas.length - 1].focus();
@@ -1602,11 +1738,13 @@ document.addEventListener('click', function (e) {
   if (el.dataset.blocktype) {
     var p = el.dataset.blocktype.split(':'), bi2 = parseInt(p[0], 10), bj = parseInt(p[1], 10);
     s.scenes[bi2].blocks[bj].t = nextBlockType(s.scenes[bi2].blocks[bj].t);
+    touchLocal();
     save(); renderStep(); return;
   }
   if (el.dataset.blockdel) {
     var p2 = el.dataset.blockdel.split(':'), ci = parseInt(p2[0], 10), cj = parseInt(p2[1], 10);
     s.scenes[ci].blocks.splice(cj, 1);
+    touchLocal();
     save(); renderStep(); updateDraftTotals(); return;
   }
   if (el.dataset.print === 'draft-all') { doPrint('draft'); return; }
@@ -1683,14 +1821,14 @@ document.addEventListener('click', function (e) {
     var conf = document.getElementById('cloud-claim');
     if (conf) conf.hidden = true;
     if (pc && pc.db && cloudUser) {
-      /* They said these scripts are theirs: adopt them, then let the
-         normal sync decision run — push if the cloud is empty, ask
-         again if the cloud already has different scripts. */
+      /* They said these scripts are theirs: adopt them, then sync —
+         a newer cloud copy goes to the conflict chooser, never a
+         silent pull over the library they just claimed. */
       DB = normalize(JSON.parse(JSON.stringify(pc.db)));
       libraryOwner = cloudUser.id;
       persistLocal();
       renderList();
-      initialSync();
+      syncAfterClaim();
     }
     return;
   }
@@ -1745,7 +1883,7 @@ document.addEventListener('click', function (e) {
   if (el.id === 'btn-import') { document.getElementById('import-file').click(); return; }
   if (el.id === 'btn-reset-all') {
     if (confirm('Reset ALL scripts to blank? Your saved work will be gone. Export a backup first if you want to keep it.')) {
-      DB = seed(); save(); renderList();
+      DB = seed(); touchLocal(); save(); renderList();
     }
     return;
   }
@@ -1758,7 +1896,7 @@ document.addEventListener('change', function (e) {
       try {
         var data = JSON.parse(reader.result);
         if (!data || !Array.isArray(data.scripts)) throw new Error('bad file');
-        DB = normalize(data); save(); renderList();
+        DB = normalize(data); touchLocal(); save(); renderList();
       } catch (err) { alert('That file did not look like a Script Builder backup.'); }
     };
     reader.readAsText(el.files[0]);
@@ -1768,6 +1906,16 @@ document.addEventListener('change', function (e) {
 document.addEventListener('keydown', function (e) {
   if ((e.metaKey || e.ctrlKey) && e.key === 'p') { /* browser print; #print-view must already be built — use the buttons. */ }
 });
+/* Automatic re-checks (no Sync Now press needed): when the app regains
+   focus or becomes visible again, pull the newest copy if there is one.
+   When the app is closed or hidden, flush any pending push right away.
+   Closing never signs anyone out — sign-out stays manual only. */
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) { flushCloudPushOnClose(); return; }
+  recheckCloud();
+});
+window.addEventListener('focus', function () { recheckCloud(); });
+window.addEventListener('pagehide', function () { flushCloudPushOnClose(); });
 
 renderList();
 initCloud();
