@@ -3,6 +3,9 @@
    Optional cloud sync (Supabase, sign-in on the home screen) backs the
    same library up to the cloud and syncs it between devices — the app
    still works fully offline if the cloud can't be reached.
+   Each signed-in account has its own local cache on a shared device,
+   so signing in as someone else never pushes the previous person's
+   scripts to the new account (see the cloud sync section below).
    One index card at a time. No clocks, no timing features of any kind.
    Flow: idea → logline → characters/arcs → beats/scenes → write → print. */
 'use strict';
@@ -209,7 +212,8 @@ function save() {
   if (!document.getElementById('view-wizard').hidden) {
     cur().updatedAt = new Date().toISOString();
   }
-  try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch (e) {}
+  if (cloudUser) libraryOwner = cloudUser.id;
+  persistLocal();
   var note = document.getElementById('saved-note');
   if (note) note.textContent = 'Saved on this device · ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   scheduleCloudPush();
@@ -235,7 +239,20 @@ function save() {
    - both non-empty and identical -> nothing to do
    - both non-empty and different -> STOP and ask; never overwrite
      either side silently, and never overwrite non-empty data with
-     empty data. */
+     empty data.
+   Shared-device rule (per-user local caches, tested in smoke7):
+   LS_KEY holds the library currently on screen; who it belongs to is
+   recorded under LS_OWNER_KEY (a user id, '' for the signed-out
+   cache, or no record at all for a library saved before this fix —
+   owner unknown, "legacy"). Each account also has its own stash key.
+   Signing in stashes the on-screen library under its previous owner,
+   then loads the new account's own stash (or starts empty). A library
+   with no known owner, or one saved while signed out, is never
+   auto-pushed: the app asks first ("Are they yours?") and only
+   uploads it on an explicit Yes. Signing out stashes the account's
+   library under its key and restores the signed-out cache. A local
+   library is only ever pushed to the cloud account of the user it
+   belongs to. */
 var SB_URL = 'https://elnbqrnljdqvjcbpyxne.supabase.co';
 var SB_ANON = 'sb_publishable_3rtVB9nuc61cLb5I7nhYZg_WFlxlk79';
 var SB_SESSION_KEY = 'scriptBuilder.session.v1';
@@ -259,6 +276,125 @@ var cloudBusy = false;
 var cloudPushPending = false;
 var cloudSuppressPush = false;
 var pendingCloud = null; /* {db, updatedAt} — the cloud copy awaiting a choice */
+var pendingClaim = null; /* {db, kind} — an unclaimed local library awaiting an answer */
+
+/* ---- per-user local caches ---- */
+var LS_OWNER_KEY = 'scriptBuilder.owner.v1';
+var LS_SIGNEDOUT_KEY = 'scriptBuilder.signedout.v1';
+var LS_LEGACY_KEY = 'scriptBuilder.legacy.v1';
+var LS_LEGACY_BACKUP_KEY = 'scriptBuilder.legacy-backup.v1';
+var LS_USER_PREFIX = 'scriptBuilder.user.';
+function stashKeyFor(ownerId) {
+  if (ownerId === '') return LS_SIGNEDOUT_KEY;
+  if (ownerId === null) return LS_LEGACY_KEY;
+  return LS_USER_PREFIX + ownerId;
+}
+/* Owner record: returns a user id, '' for the signed-out cache, or
+   undefined when no record exists (a library saved before this fix —
+   owner unknown). */
+function loadOwnerRecord() {
+  try {
+    var raw = localStorage.getItem(LS_OWNER_KEY);
+    if (!raw) return undefined;
+    var o = JSON.parse(raw);
+    return (o && typeof o.userId === 'string') ? o.userId : '';
+  } catch (e) { return undefined; }
+}
+/* Who the library currently in LS_KEY belongs to: a user id, '' for
+   the signed-out cache, or null when it is unknown (legacy). */
+var libraryOwner = (function () {
+  var rec = loadOwnerRecord();
+  if (rec !== undefined) return rec;
+  return isEmptyDB(DB) ? '' : null;
+})();
+function persistOwner() {
+  /* Legacy (unknown owner): leave no record, so the claim question
+     still fires on the next sign-in instead of being silently settled. */
+  if (libraryOwner === null) return;
+  try { localStorage.setItem(LS_OWNER_KEY, JSON.stringify({ userId: libraryOwner, email: cloudUser ? (cloudUser.email || '') : '' })); } catch (e) {}
+}
+function persistLocal() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch (e) {}
+  persistOwner();
+}
+function loadStash(ownerId) {
+  try {
+    var raw = localStorage.getItem(stashKeyFor(ownerId));
+    if (!raw) return null;
+    var db = JSON.parse(raw);
+    return (db && Array.isArray(db.scripts)) ? db : null;
+  } catch (e) { return null; }
+}
+function stashLibrary(ownerId, db) {
+  try { localStorage.setItem(stashKeyFor(ownerId), JSON.stringify(db)); } catch (e) {}
+}
+/* Whose is the library on screen right now? The signed-in user if
+   there is one, else the recorded owner, else unknown (legacy) when
+   a non-empty library has no record, else the signed-out cache. */
+function resolveCurrentOwnerId() {
+  if (cloudUser) return cloudUser.id;
+  var rec = loadOwnerRecord();
+  if (rec !== undefined) return rec;
+  return isEmptyDB(DB) ? '' : null;
+}
+/* Switch the on-screen library to a newly signed-in account.
+   Returns true when the library is ready for cloud sync, false when
+   an unclaimed local library is waiting on the claim question. */
+function switchToUser(sess, prevOwnerId) {
+  pendingClaim = null;
+  /* Callers pass either a session ({user_id}) or the signed-in user
+     ({id}) — accept both shapes. */
+  var uid = sess.user_id || sess.id;
+  var email = sess.email || '';
+  if (prevOwnerId === uid) {
+    /* Same account as the library on screen: it is already theirs. */
+    libraryOwner = uid;
+    persistLocal();
+    renderList();
+    return true;
+  }
+  /* Stash the library on screen under its previous owner, so nothing
+     is lost when we switch. Only a non-empty library is stashed here. */
+  if (!isEmptyDB(DB)) stashLibrary(prevOwnerId, DB);
+  /* Does this account already have its own local cache on this device? */
+  var own = loadStash(uid);
+  if (own !== null) {
+    DB = normalize(own);
+    libraryOwner = uid;
+    persistLocal();
+    renderList();
+    return true;
+  }
+  /* No cache of theirs here. If the library we just stashed aside has
+     no known owner (legacy) or was saved while signed out, it might
+     be theirs — ask first, never auto-push it. */
+  if (!isEmptyDB(DB) && (prevOwnerId === null || prevOwnerId === '')) {
+    pendingClaim = { db: JSON.parse(JSON.stringify(DB)), kind: prevOwnerId === null ? 'legacy' : 'signedout', email: email };
+    DB = seed();
+    libraryOwner = uid;
+    persistLocal();
+    renderList();
+    return false;
+  }
+  DB = seed();
+  libraryOwner = uid;
+  persistLocal();
+  renderList();
+  return true;
+}
+function showClaimPanel() {
+  var el = document.getElementById('cloud-claim');
+  var txt = document.getElementById('cloud-claim-text');
+  if (txt && pendingClaim) {
+    var n = scriptCount(pendingClaim.db);
+    var where = pendingClaim.kind === 'legacy' ? 'from before cloud sync' : 'saved while signed out';
+    txt.textContent = 'This device has ' + n + ' script' + (n === 1 ? '' : 's') + ' ' + where +
+      '. Are they yours? Upload them to ' + (pendingClaim.email || 'your') + ' cloud account?';
+  }
+  if (el) el.hidden = false;
+  setCloudStatus('claim');
+  renderCloudAuth();
+}
 
 function isEmptyDB(db) { return !db || !Array.isArray(db.scripts) || db.scripts.length === 0; }
 function scriptCount(db) { return isEmptyDB(db) ? 0 : db.scripts.length; }
@@ -284,6 +420,7 @@ function cloudStatusMessage(state, when) {
   if (state === 'synced') return when ? 'Saved to cloud ' + when : 'Saved to cloud';
   if (state === 'local') return 'Saved on this device \u2014 cloud unreachable, will retry';
   if (state === 'choosing') return 'Cloud and this device both have scripts \u2014 pick one below';
+  if (state === 'claim') return 'This device already has scripts \u2014 are they yours? Pick below';
   return 'Cloud sync had a problem \u2014 your work is still saved on this device';
 }
 function setCloudStatus(state, when) {
@@ -304,6 +441,8 @@ function renderCloudAuth() {
   if (shown) shown.textContent = cloudUser ? (cloudUser.email || '') : '';
   var conflict = document.getElementById('cloud-conflict');
   if (conflict && cloudState !== 'choosing') conflict.hidden = true;
+  var claim = document.getElementById('cloud-claim');
+  if (claim && cloudState !== 'claim') claim.hidden = true;
 }
 function saveCloudSession(s) {
   cloudSession = s;
@@ -480,7 +619,11 @@ function initCloud() {
   }) : Promise.resolve();
   return p.then(function () { return authGetUser(); }).then(function (u) {
     if (u && u.id) { cloudUser = { id: u.id, email: u.email || cloudUser.email }; }
-    return initialSync();
+    /* The library on screen may belong to someone else — or to nobody
+       known, if it predates per-user caches. Switch it first, so the
+       sync below only ever touches this account's library. */
+    if (switchToUser(cloudUser, libraryOwner)) return initialSync();
+    showClaimPanel();
   }).catch(function (err) {
     if (err && err.status === 401) {
       clearCloudSession();
@@ -492,11 +635,15 @@ function initCloud() {
     setCloudStatus('local');
   });
 }
-/* Test hook (also used by smoke6): pure sync logic + config, nothing else. */
+/* Test hook (also used by smoke6/7): pure sync logic + config, nothing else. */
 if (typeof window !== 'undefined') {
   window.__scriptBuilderSync = {
     decideSync: decideSync, isEmptyDB: isEmptyDB, scriptCount: scriptCount,
-    cloudStatusMessage: cloudStatusMessage, SB_URL: SB_URL
+    cloudStatusMessage: cloudStatusMessage, SB_URL: SB_URL,
+    stashKeyFor: stashKeyFor, signedOutKey: LS_SIGNEDOUT_KEY,
+    legacyKey: LS_LEGACY_KEY, legacyBackupKey: LS_LEGACY_BACKUP_KEY,
+    ownerKey: LS_OWNER_KEY,
+    libraryOwner: function () { return libraryOwner; }
   };
 }
 
@@ -1485,11 +1632,15 @@ document.addEventListener('click', function (e) {
     req.then(function (data) {
       var sess = sessionFromAuth(data);
       if (sess) {
+        /* Whose is the library on screen? Work it out BEFORE the new
+           session replaces the old one, or the answer is lost. */
+        var prevOwnerId = resolveCurrentOwnerId();
         saveCloudSession(sess);
         renderCloudAuth();
         if (passEl) passEl.value = '';
         if (msgEl) msgEl.textContent = '';
-        initialSync();
+        if (switchToUser(sess, prevOwnerId)) initialSync();
+        else showClaimPanel();
         return;
       }
       /* Sign-up with email confirmation ON: no session yet — the user
@@ -1506,9 +1657,58 @@ document.addEventListener('click', function (e) {
   }
   if (el.id === 'btn-cloud-signout') {
     if (cloudSession) sbFetch('/auth/v1/logout', { method: 'POST', body: '{}' }).catch(function () {});
+    /* Stash this account's library under its own key first — signing
+       out must never delete anyone's scripts. Stash even an empty
+       library when one already exists, so a deliberate delete-all
+       is not resurrected on the next sign-in. */
+    if (cloudUser && (!isEmptyDB(DB) || loadStash(cloudUser.id) !== null)) {
+      try { localStorage.setItem(stashKeyFor(cloudUser.id), JSON.stringify(DB)); } catch (e) {}
+    }
+    /* Then restore the signed-out cache (or an empty library). */
+    var out = loadStash('');
+    DB = out ? normalize(out) : seed();
+    libraryOwner = '';
+    pendingCloud = null;
+    pendingClaim = null;
     clearCloudSession();
+    persistLocal();
     setCloudStatus('off');
     renderCloudAuth();
+    renderList();
+    return;
+  }
+  if (el.id === 'btn-cloud-claim-yes') {
+    var pc = pendingClaim;
+    pendingClaim = null;
+    var conf = document.getElementById('cloud-claim');
+    if (conf) conf.hidden = true;
+    if (pc && pc.db && cloudUser) {
+      /* They said these scripts are theirs: adopt them, then let the
+         normal sync decision run — push if the cloud is empty, ask
+         again if the cloud already has different scripts. */
+      DB = normalize(JSON.parse(JSON.stringify(pc.db)));
+      libraryOwner = cloudUser.id;
+      persistLocal();
+      renderList();
+      initialSync();
+    }
+    return;
+  }
+  if (el.id === 'btn-cloud-claim-no') {
+    var pc2 = pendingClaim;
+    pendingClaim = null;
+    var conf2 = document.getElementById('cloud-claim');
+    if (conf2) conf2.hidden = true;
+    if (pc2 && pc2.db) {
+      /* Not theirs: stash the library aside under a backup key.
+         Nothing is deleted — it stays saved on this device. */
+      try { localStorage.setItem(LS_LEGACY_BACKUP_KEY, JSON.stringify(pc2.db)); } catch (e) {}
+    }
+    DB = seed();
+    if (cloudUser) libraryOwner = cloudUser.id;
+    persistLocal();
+    renderList();
+    initialSync();
     return;
   }
   if (el.id === 'btn-cloud-sync') {

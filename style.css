@@ -114,7 +114,7 @@ button:disabled { opacity: .45; cursor: default; }
 .cloud h3 { margin: 0 0 6px; }
 .cloud label { margin-top: 10px; }
 #cloud-status { font-weight: 700; }
-#cloud-conflict { background: #fdf3d7; border: 1.5px solid #e8c96a; border-radius: 10px; padding: 12px; margin-top: 12px; }
+#cloud-conflict, #cloud-claim { background: #fdf3d7; border: 1.5px solid #e8c96a; border-radius: 10px; padding: 12px; margin-top: 12px; }
 footer { text-align: center; color: var(--muted); font-size: 13px; padding: 20px; }
 
 /* ---- Print preview on screen: pages look like paper ---- */

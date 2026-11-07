@@ -49,6 +49,15 @@
           </div>
           <p class="muted">Nothing was overwritten. Export a backup first if you want to keep both copies.</p>
         </div>
+        <div id="cloud-claim" hidden>
+          <p><b>This device already has scripts — are they yours?</b></p>
+          <p id="cloud-claim-text" class="muted"></p>
+          <div class="btnrow">
+            <button class="small primary" id="btn-cloud-claim-yes" type="button">Yes — upload them to my cloud</button>
+            <button class="small" id="btn-cloud-claim-no" type="button">No — start from my cloud copy</button>
+          </div>
+          <p class="muted">If you pick No, those scripts stay saved on this device under a backup — nothing is deleted.</p>
+        </div>
       </div>
       <p class="stat">Scripts: <b id="stat-total">0</b> &nbsp;·&nbsp; Draft done: <b id="stat-done">0</b> &nbsp;·&nbsp; Outline done: <b id="stat-outline">0</b> &nbsp;·&nbsp; Pages drafted: <b id="stat-pages">0</b></p>
       <div class="progress"><div id="stat-bar"></div></div>
