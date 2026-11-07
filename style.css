@@ -22,7 +22,7 @@ h3 { font-size: 18px; margin: 18px 0 8px; }
 p.sub { color: var(--muted); margin: 0 0 12px; }
 label { display: block; font-weight: 700; font-size: 15px; margin: 14px 0 5px; }
 label .hint { display: block; font-weight: 400; color: var(--muted); font-size: 14px; margin-top: 2px; }
-input[type=text], input[type=date], input[type=number], select, textarea {
+input[type=text], input[type=date], input[type=number], input[type=email], input[type=password], select, textarea {
   width: 100%; font-size: 18px; padding: 12px; border: 1.5px solid #999;
   border-radius: 10px; background: #fff; color: var(--ink); font-family: inherit;
 }
@@ -109,6 +109,12 @@ button:disabled { opacity: .45; cursor: default; }
 .b-transition textarea { text-align: right; text-transform: uppercase; font-weight: 700; }
 #print-view { display: none; }
 #preview-bar { display: none; }
+/* Cloud sync box on the home screen */
+.cloud { background: #eef4ef; border: 1.5px solid #9ec5ab; border-radius: 10px; padding: 14px; margin: 12px 0; }
+.cloud h3 { margin: 0 0 6px; }
+.cloud label { margin-top: 10px; }
+#cloud-status { font-weight: 700; }
+#cloud-conflict { background: #fdf3d7; border: 1.5px solid #e8c96a; border-radius: 10px; padding: 12px; margin-top: 12px; }
 footer { text-align: center; color: var(--muted); font-size: 13px; padding: 20px; }
 
 /* ---- Print preview on screen: pages look like paper ---- */

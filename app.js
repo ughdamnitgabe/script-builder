@@ -1,5 +1,8 @@
-/* Script Builder — free standalone app. No backend, no account.
+/* Script Builder — free standalone app.
    All data lives in localStorage on this device under 'scriptBuilder.v1'.
+   Optional cloud sync (Supabase, sign-in on the home screen) backs the
+   same library up to the cloud and syncs it between devices — the app
+   still works fully offline if the cloud can't be reached.
    One index card at a time. No clocks, no timing features of any kind.
    Flow: idea → logline → characters/arcs → beats/scenes → write → print. */
 'use strict';
@@ -209,7 +212,294 @@ function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch (e) {}
   var note = document.getElementById('saved-note');
   if (note) note.textContent = 'Saved on this device · ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  scheduleCloudPush();
 }
+
+/* ---------------- cloud sync (Supabase, optional) ----------------
+   The app is fully usable without it: localStorage is the offline cache
+   and the source of truth on this device. Cloud sync only ever runs
+   when the user is signed in, and a failed / unreachable cloud never
+   blocks typing, saving locally, or printing.
+   - Project: script-builder (separate from Sumo), free tier.
+   - Table: public.script_libraries, one row per user (user_id = auth.uid()).
+   - Auth: email + password, email confirmation ON (see README).
+   - The publishable (anon) key below is a public frontend key. Row
+     Level Security only ever lets a user read/write their own row.
+     NEVER put a service_role key in this app.
+   - No password is ever stored. Only the Supabase session (access +
+     refresh token) is kept, under SB_SESSION_KEY, so sign-in survives
+     a reload on that device. Sign out clears it.
+   Sync rules (decideSync, pure + tested in smoke6):
+   - cloud empty + local has scripts -> push local up
+   - cloud has scripts + local empty -> pull cloud down
+   - both non-empty and identical -> nothing to do
+   - both non-empty and different -> STOP and ask; never overwrite
+     either side silently, and never overwrite non-empty data with
+     empty data. */
+var SB_URL = 'https://elnbqrnljdqvjcbpyxne.supabase.co';
+var SB_ANON = 'sb_publishable_3rtVB9nuc61cLb5I7nhYZg_WFlxlk79';
+var SB_SESSION_KEY = 'scriptBuilder.session.v1';
+var CLOUD_DEBOUNCE_MS = 2000;
+
+function loadCloudSession() {
+  try {
+    var raw = localStorage.getItem(SB_SESSION_KEY);
+    if (!raw) return null;
+    var s = JSON.parse(raw);
+    if (!s || !s.access_token || !s.user_id) return null;
+    return s;
+  } catch (e) { return null; }
+}
+var cloudSession = loadCloudSession();
+var cloudUser = cloudSession ? { id: cloudSession.user_id, email: cloudSession.email || '' } : null;
+var cloudState = cloudUser ? 'local' : 'off'; /* off|saving|synced|local|error|choosing */
+var cloudLastSync = null;
+var cloudPushHandle = null;
+var cloudBusy = false;
+var cloudPushPending = false;
+var cloudSuppressPush = false;
+var pendingCloud = null; /* {db, updatedAt} — the cloud copy awaiting a choice */
+
+function isEmptyDB(db) { return !db || !Array.isArray(db.scripts) || db.scripts.length === 0; }
+function scriptCount(db) { return isEmptyDB(db) ? 0 : db.scripts.length; }
+function latestUpdated(db) {
+  if (isEmptyDB(db)) return '';
+  var best = '';
+  db.scripts.forEach(function (s) { if (s.updatedAt && s.updatedAt > best) best = s.updatedAt; });
+  return best;
+}
+/* Pure merge decision. Returns {action, localCount, cloudCount}.
+   'push' and 'pull' only ever carry non-empty data to an empty side. */
+function decideSync(localDB, cloudDB) {
+  var lc = scriptCount(localDB), cc = scriptCount(cloudDB);
+  if (lc === 0 && cc === 0) return { action: 'none', localCount: lc, cloudCount: cc };
+  if (cc === 0 && lc > 0) return { action: 'push', localCount: lc, cloudCount: cc };
+  if (lc === 0 && cc > 0) return { action: 'pull', localCount: lc, cloudCount: cc };
+  if (JSON.stringify(localDB) === JSON.stringify(cloudDB)) return { action: 'none', localCount: lc, cloudCount: cc };
+  return { action: 'choose', localCount: lc, cloudCount: cc };
+}
+function cloudStatusMessage(state, when) {
+  if (state === 'off') return 'Cloud sync off — you\u2019re signed out';
+  if (state === 'saving') return 'Saving to cloud\u2026';
+  if (state === 'synced') return when ? 'Saved to cloud ' + when : 'Saved to cloud';
+  if (state === 'local') return 'Saved on this device \u2014 cloud unreachable, will retry';
+  if (state === 'choosing') return 'Cloud and this device both have scripts \u2014 pick one below';
+  return 'Cloud sync had a problem \u2014 your work is still saved on this device';
+}
+function setCloudStatus(state, when) {
+  cloudState = state;
+  if (state === 'synced') cloudLastSync = when || new Date();
+  var el = document.getElementById('cloud-status');
+  if (el) {
+    var t = state === 'synced' ? cloudStatusMessage(state, (cloudLastSync || new Date()).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : cloudStatusMessage(state);
+    el.textContent = t;
+  }
+}
+function renderCloudAuth() {
+  var out = document.getElementById('cloud-signed-out');
+  var inn = document.getElementById('cloud-signed-in');
+  if (out) out.hidden = !!cloudUser;
+  if (inn) inn.hidden = !cloudUser;
+  var shown = document.getElementById('cloud-email-shown');
+  if (shown) shown.textContent = cloudUser ? (cloudUser.email || '') : '';
+  var conflict = document.getElementById('cloud-conflict');
+  if (conflict && cloudState !== 'choosing') conflict.hidden = true;
+}
+function saveCloudSession(s) {
+  cloudSession = s;
+  try { localStorage.setItem(SB_SESSION_KEY, JSON.stringify(s)); } catch (e) {}
+  if (s) cloudUser = { id: s.user_id, email: s.email || '' };
+}
+function clearCloudSession() {
+  cloudSession = null; cloudUser = null; pendingCloud = null;
+  try { localStorage.removeItem(SB_SESSION_KEY); } catch (e) {}
+}
+function friendlyAuthError(msg) {
+  var m = String(msg || '');
+  if (/email not confirmed/i.test(m)) return 'That email isn\u2019t confirmed yet \u2014 check your inbox for the confirmation link, tap it, then try signing in again.';
+  if (/invalid login credentials/i.test(m)) return 'That email or password didn\u2019t match. Check them and try again.';
+  if (/user already registered|already exists/i.test(m)) return 'That email already has an account \u2014 try Sign in instead.';
+  if (/password.*(short|6 characters)|at least 6/i.test(m)) return 'Pick a password at least 6 characters long.';
+  if (/network|failed to fetch|offline/i.test(m)) return 'Couldn\u2019t reach the cloud \u2014 check your connection and try again. Your work is still saved on this device.';
+  return m || 'Something went wrong signing in. Your work is still saved on this device.';
+}
+function sbFetch(path, opts) {
+  if (typeof fetch !== 'function') return Promise.reject(new Error('fetch unavailable'));
+  opts = opts || {};
+  var headers = { apikey: SB_ANON, 'Content-Type': 'application/json' };
+  if (cloudSession && cloudSession.access_token) headers.Authorization = 'Bearer ' + cloudSession.access_token;
+  if (opts.headers) Object.keys(opts.headers).forEach(function (k) { headers[k] = opts.headers[k]; });
+  return fetch(SB_URL + path, { method: opts.method || 'GET', headers: headers, body: opts.body }).then(function (res) {
+    return res.text().then(function (txt) {
+      var data = null;
+      try { data = txt ? JSON.parse(txt) : null; } catch (e) { data = null; }
+      if (!res.ok) {
+        var msg = (data && (data.error_description || data.msg || data.message)) || (data && data.error && data.error.message) || ('HTTP ' + res.status);
+        var err = new Error(msg);
+        err.status = res.status;
+        throw err;
+      }
+      return data;
+    });
+  });
+}
+function sessionFromAuth(data) {
+  if (!data || !data.access_token || !data.user) return null;
+  return { access_token: data.access_token, refresh_token: data.refresh_token || '',
+           user_id: data.user.id, email: data.user.email || '',
+           expires_at: data.expires_in ? Math.floor(Date.now() / 1000) + data.expires_in : 0 };
+}
+function authSignUp(email, password) {
+  return sbFetch('/auth/v1/signup', { method: 'POST', body: JSON.stringify({ email: email, password: password }) });
+}
+function authSignIn(email, password) {
+  return sbFetch('/auth/v1/token?grant_type=password', { method: 'POST', body: JSON.stringify({ email: email, password: password }) });
+}
+function authRefresh() {
+  if (!cloudSession || !cloudSession.refresh_token) return Promise.reject(new Error('no refresh token'));
+  return sbFetch('/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: JSON.stringify({ refresh_token: cloudSession.refresh_token }) });
+}
+function authGetUser() {
+  return sbFetch('/auth/v1/user', { method: 'GET' });
+}
+function fetchCloudRow() {
+  if (!cloudUser) return Promise.reject(new Error('not signed in'));
+  return sbFetch('/rest/v1/script_libraries?select=data,updated_at&user_id=eq.' + encodeURIComponent(cloudUser.id), { method: 'GET' })
+    .then(function (rows) {
+      if (!rows || !rows.length) return null;
+      var row = rows[0];
+      var db = null;
+      try { db = normalize(JSON.parse(JSON.stringify(row.data || { scripts: [] }))); } catch (e) { db = null; }
+      return { db: db, updatedAt: row.updated_at || '' };
+    });
+}
+function pushCloudRow() {
+  if (!cloudUser) return Promise.reject(new Error('not signed in'));
+  var body = { user_id: cloudUser.id, data: DB, updated_at: new Date().toISOString() };
+  return sbFetch('/rest/v1/script_libraries', {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(body)
+  });
+}
+function showConflict(localDB, cloud) {
+  pendingCloud = cloud;
+  var el = document.getElementById('cloud-conflict');
+  var txt = document.getElementById('cloud-conflict-text');
+  if (txt) {
+    var lu = latestUpdated(localDB), cu = cloud.updatedAt || latestUpdated(cloud.db);
+    txt.textContent = 'This device: ' + scriptCount(localDB) + ' script' + (scriptCount(localDB) === 1 ? '' : 's') +
+      (lu ? ' (last worked ' + fmtISO(lu) + ')' : '') + ' · Cloud: ' + scriptCount(cloud.db) + ' script' + (scriptCount(cloud.db) === 1 ? '' : 's') +
+      (cu ? ' (saved ' + fmtISO(cu) + ')' : '') + '.';
+  }
+  if (el) el.hidden = false;
+  setCloudStatus('choosing');
+  renderCloudAuth();
+}
+function applyCloudDB(db) {
+  cloudSuppressPush = true;
+  try {
+    DB = normalize(JSON.parse(JSON.stringify(db)));
+    save();
+  } finally { cloudSuppressPush = false; }
+  pendingCloud = null;
+  setCloudStatus('synced');
+  renderList();
+}
+function initialSync() {
+  if (!cloudUser || cloudBusy) return Promise.resolve();
+  cloudBusy = true;
+  setCloudStatus('saving');
+  return fetchCloudRow().then(function (cloud) {
+    cloudBusy = false;
+    if (!cloud || !cloud.db) {
+      /* No cloud row yet: push local up if there is anything to push. */
+      if (isEmptyDB(DB)) { setCloudStatus('synced'); return; }
+      return pushCloud();
+    }
+    var decision = decideSync(DB, cloud.db);
+    if (decision.action === 'push') return pushCloud();
+    if (decision.action === 'pull') { applyCloudDB(cloud.db); return; }
+    if (decision.action === 'choose') { showConflict(DB, cloud); return; }
+    setCloudStatus('synced');
+  }).catch(function (err) {
+    cloudBusy = false;
+    if (err && err.status === 401) {
+      clearCloudSession();
+      setCloudStatus('off');
+      renderCloudAuth();
+      var msg = document.getElementById('cloud-auth-msg');
+      if (msg) msg.textContent = 'Your sign-in expired \u2014 sign in again.';
+      return;
+    }
+    /* Network / cloud unreachable: local work is safe, stay signed in. */
+    setCloudStatus('local');
+  });
+}
+function pushCloud() {
+  if (!cloudUser || cloudBusy) { if (cloudUser) cloudPushPending = true; return Promise.resolve(); }
+  cloudBusy = true;
+  setCloudStatus('saving');
+  var run = function () {
+    return pushCloudRow().then(function () {
+      cloudBusy = false;
+      setCloudStatus('synced');
+      if (cloudPushPending) { cloudPushPending = false; return pushCloud(); }
+    });
+  };
+  var needRefresh = cloudSession && cloudSession.expires_at && cloudSession.expires_at - Math.floor(Date.now() / 1000) < 60;
+  var p = needRefresh ? authRefresh().then(function (data) {
+    var s = sessionFromAuth(data);
+    if (s) saveCloudSession(s);
+  }).catch(function () { /* refresh failed — try the push anyway; a 401 will sign out */ }) : Promise.resolve();
+  return p.then(run).catch(function (err) {
+    cloudBusy = false;
+    if (err && err.status === 401) {
+      clearCloudSession();
+      setCloudStatus('off');
+      renderCloudAuth();
+      return;
+    }
+    setCloudStatus('local');
+  });
+}
+function scheduleCloudPush() {
+  if (!cloudUser || cloudSuppressPush) return;
+  if (cloudPushHandle) clearTimeout(cloudPushHandle);
+  cloudPushHandle = setTimeout(function () { cloudPushHandle = null; pushCloud(); }, CLOUD_DEBOUNCE_MS);
+}
+function initCloud() {
+  renderCloudAuth();
+  if (!cloudUser) { setCloudStatus('off'); return Promise.resolve(); }
+  setCloudStatus('local');
+  if (typeof fetch !== 'function') { setCloudStatus('local'); return Promise.resolve(); }
+  var needRefresh = cloudSession && cloudSession.expires_at && cloudSession.expires_at - Math.floor(Date.now() / 1000) < 60;
+  var p = needRefresh ? authRefresh().then(function (data) {
+    var s = sessionFromAuth(data);
+    if (s) saveCloudSession(s);
+  }) : Promise.resolve();
+  return p.then(function () { return authGetUser(); }).then(function (u) {
+    if (u && u.id) { cloudUser = { id: u.id, email: u.email || cloudUser.email }; }
+    return initialSync();
+  }).catch(function (err) {
+    if (err && err.status === 401) {
+      clearCloudSession();
+      setCloudStatus('off');
+      renderCloudAuth();
+      return;
+    }
+    /* Offline / cloud unreachable on load: app works locally as normal. */
+    setCloudStatus('local');
+  });
+}
+/* Test hook (also used by smoke6): pure sync logic + config, nothing else. */
+if (typeof window !== 'undefined') {
+  window.__scriptBuilderSync = {
+    decideSync: decideSync, isEmptyDB: isEmptyDB, scriptCount: scriptCount,
+    cloudStatusMessage: cloudStatusMessage, SB_URL: SB_URL
+  };
+}
+
 function cur() {
   var found = null;
   DB.scripts.forEach(function (x) { if (x.id === currentId) found = x; });
@@ -1181,6 +1471,67 @@ document.addEventListener('click', function (e) {
   if (el.id === 'btn-new-script') { newScript(); return; }
   if (el.dataset.duplicate) { duplicateScript(parseInt(el.dataset.duplicate, 10)); return; }
   if (el.dataset.delete) { deleteScript(parseInt(el.dataset.delete, 10)); return; }
+  if (el.id === 'btn-cloud-signin' || el.id === 'btn-cloud-signup') {
+    var emailEl = document.getElementById('cloud-email');
+    var passEl = document.getElementById('cloud-password');
+    var msgEl = document.getElementById('cloud-auth-msg');
+    var email = emailEl ? emailEl.value.trim() : '';
+    var pw = passEl ? passEl.value : '';
+    if (!email || email.indexOf('@') < 0) { if (msgEl) msgEl.textContent = 'Enter an email address first.'; return; }
+    if (!pw || pw.length < 6) { if (msgEl) msgEl.textContent = 'Enter a password at least 6 characters long.'; return; }
+    if (msgEl) msgEl.textContent = el.id === 'btn-cloud-signup' ? 'Creating your account…' : 'Signing in…';
+    var isSignup = el.id === 'btn-cloud-signup';
+    var req = isSignup ? authSignUp(email, pw) : authSignIn(email, pw);
+    req.then(function (data) {
+      var sess = sessionFromAuth(data);
+      if (sess) {
+        saveCloudSession(sess);
+        renderCloudAuth();
+        if (passEl) passEl.value = '';
+        if (msgEl) msgEl.textContent = '';
+        initialSync();
+        return;
+      }
+      /* Sign-up with email confirmation ON: no session yet — the user
+         must tap the confirmation link in their email first. */
+      if (isSignup) {
+        if (msgEl) msgEl.textContent = 'Check your email — we sent a confirmation link. Tap it, then come back and sign in here.';
+      } else {
+        if (msgEl) msgEl.textContent = 'Sign-in didn\u2019t return a session. If you just signed up, check your email for the confirmation link first.';
+      }
+    }).catch(function (err) {
+      if (msgEl) msgEl.textContent = friendlyAuthError(err && err.message);
+    });
+    return;
+  }
+  if (el.id === 'btn-cloud-signout') {
+    if (cloudSession) sbFetch('/auth/v1/logout', { method: 'POST', body: '{}' }).catch(function () {});
+    clearCloudSession();
+    setCloudStatus('off');
+    renderCloudAuth();
+    return;
+  }
+  if (el.id === 'btn-cloud-sync') {
+    if (!cloudUser) { var m = document.getElementById('cloud-auth-msg'); if (m) m.textContent = 'Sign in first to sync.'; return; }
+    initialSync();
+    return;
+  }
+  if (el.id === 'btn-cloud-keep-local') {
+    var pc = pendingCloud;
+    pendingCloud = null;
+    var conf = document.getElementById('cloud-conflict');
+    if (conf) conf.hidden = true;
+    if (pc) pushCloud();
+    return;
+  }
+  if (el.id === 'btn-cloud-use-cloud') {
+    var pc2 = pendingCloud;
+    pendingCloud = null;
+    var conf2 = document.getElementById('cloud-conflict');
+    if (conf2) conf2.hidden = true;
+    if (pc2 && pc2.db) applyCloudDB(pc2.db);
+    return;
+  }
   if (el.id === 'btn-export') {
     var blob = new Blob([JSON.stringify(DB, null, 2)], { type: 'application/json' });
     var a = document.createElement('a');
@@ -1219,3 +1570,4 @@ document.addEventListener('keydown', function (e) {
 });
 
 renderList();
+initCloud();

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Script Builder — a free, simple step-by-step worksheet for writing scripts. No account, no server. Your work stays on your device.">
+<meta name="description" content="Script Builder — a free, simple step-by-step worksheet for writing scripts. Your work saves on this device, and optionally backs up to the cloud.">
 <title>Script Builder — My Scripts</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -18,7 +18,38 @@
   <section id="view-list">
     <div class="card">
       <h2>My Scripts</h2>
-      <p class="sub">Tap a script to open it. Everything you type saves on this device automatically — no account, no internet needed after the page loads.</p>
+      <p class="sub">Tap a script to open it. Everything you type saves on this device automatically.</p>
+      <div class="cloud" id="cloud-box">
+        <h3>☁️ Cloud sync — optional</h3>
+        <p class="muted">Sign in to back up your scripts to the cloud and use them on your phone and laptop. Your scripts stay saved on this device even if the cloud can't be reached.</p>
+        <p id="cloud-status" class="saved">Cloud sync off — you're signed out</p>
+        <div id="cloud-signed-out">
+          <label>Email<input type="email" id="cloud-email" autocomplete="email" placeholder="you@example.com"></label>
+          <label>Password<input type="password" id="cloud-password" autocomplete="current-password" placeholder="Your password"></label>
+          <div class="btnrow">
+            <button class="small primary" id="btn-cloud-signin" type="button">Sign in</button>
+            <button class="small" id="btn-cloud-signup" type="button">Sign up</button>
+          </div>
+          <p class="muted" id="cloud-auth-msg"></p>
+          <p class="muted">New here? Tap Sign up, then check your email for a confirmation link. Tap the link, then come back and sign in.</p>
+        </div>
+        <div id="cloud-signed-in" hidden>
+          <p>Signed in as <b id="cloud-email-shown"></b></p>
+          <div class="btnrow">
+            <button class="small" id="btn-cloud-sync" type="button">↻ Sync now</button>
+            <button class="small ghost" id="btn-cloud-signout" type="button">Sign out</button>
+          </div>
+        </div>
+        <div id="cloud-conflict" hidden>
+          <p><b>Cloud and this device both have scripts — pick which one to keep.</b></p>
+          <p id="cloud-conflict-text" class="muted"></p>
+          <div class="btnrow">
+            <button class="small primary" id="btn-cloud-keep-local" type="button">Keep this device</button>
+            <button class="small" id="btn-cloud-use-cloud" type="button">Use cloud copy</button>
+          </div>
+          <p class="muted">Nothing was overwritten. Export a backup first if you want to keep both copies.</p>
+        </div>
+      </div>
       <p class="stat">Scripts: <b id="stat-total">0</b> &nbsp;·&nbsp; Draft done: <b id="stat-done">0</b> &nbsp;·&nbsp; Outline done: <b id="stat-outline">0</b> &nbsp;·&nbsp; Pages drafted: <b id="stat-pages">0</b></p>
       <div class="progress"><div id="stat-bar"></div></div>
       <div class="btnrow">
