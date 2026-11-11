@@ -293,6 +293,8 @@ var cloudLastSync = null;
 var cloudPushHandle = null;
 var cloudBusy = false;
 var cloudPushPending = false;
+var cloudLastPush = null; /* last pushCloud() promise — Update waits on it */
+var cloudLastPushAt = 0; /* ms local and cloud were last known equal */
 var cloudSuppressPush = false;
 var localUnsynced = false; /* a local edit has not reached the cloud yet */
 var pendingCloud = null; /* {db, updatedAt} — the cloud copy awaiting a choice */
@@ -441,6 +443,19 @@ function localSyncTime(db) {
 function cloudSyncTime(cloudDB, cloudUpdatedAt) {
   return parseSyncTime(cloudUpdatedAt) || parseSyncTime(cloudDB && cloudDB.updatedAt) || parseSyncTime(latestUpdated(cloudDB));
 }
+/* Two libraries with the same scripts and content are identical even
+   when their last-worked stamps differ — save() re-stamps the open
+   script on every save, so a stamp-only difference must never count
+   as a newer copy on either side. */
+function sameContent(a, b) {
+  function strip(db) {
+    var c = JSON.parse(JSON.stringify(db || { scripts: [] }));
+    delete c.updatedAt;
+    (c.scripts || []).forEach(function (s) { delete s.updatedAt; });
+    return c;
+  }
+  return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
+}
 /* Pure merge decision. Returns {action, localCount, cloudCount, reason}.
    'push' and 'pull' only ever carry non-empty data to an empty side, or
    the newer copy over the older one. 'choose' is only for timestamps
@@ -450,7 +465,7 @@ function decideSync(localDB, cloudDB, cloudUpdatedAt) {
   if (lc === 0 && cc === 0) return { action: 'none', localCount: lc, cloudCount: cc, reason: 'both-empty' };
   if (cc === 0 && lc > 0) return { action: 'push', localCount: lc, cloudCount: cc, reason: 'cloud-empty' };
   if (lc === 0 && cc > 0) return { action: 'pull', localCount: lc, cloudCount: cc, reason: 'local-empty' };
-  if (JSON.stringify(localDB) === JSON.stringify(cloudDB)) return { action: 'none', localCount: lc, cloudCount: cc, reason: 'identical' };
+  if (sameContent(localDB, cloudDB)) return { action: 'none', localCount: lc, cloudCount: cc, reason: 'identical' };
   var lt = localSyncTime(localDB), ct = cloudSyncTime(cloudDB, cloudUpdatedAt);
   if (lt > 0 && ct > 0) {
     if (ct > lt) return { action: 'pull', localCount: lc, cloudCount: cc, reason: 'cloud-newer' };
@@ -472,6 +487,9 @@ function cloudStatusMessage(state, when) {
 function setCloudStatus(state, when) {
   cloudState = state;
   if (state === 'synced') cloudLastSync = when || new Date();
+  /* 'synced' and 'pulled' both mean local and cloud now hold the same
+     library — that is the moment the "edited since" clock resets. */
+  if (state === 'synced' || state === 'pulled') cloudLastPushAt = Date.now();
   var el = document.getElementById('cloud-status');
   if (el) {
     var t = state === 'synced' ? cloudStatusMessage(state, (cloudLastSync || new Date()).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : cloudStatusMessage(state);
@@ -673,16 +691,14 @@ function pushCloud() {
     var s = sessionFromAuth(data);
     if (s) saveCloudSession(s);
   }).catch(function () { /* refresh failed — try the push anyway; a 401 will sign out */ }) : Promise.resolve();
-  return p.then(run).catch(function (err) {
+  cloudLastPush = p.then(run).catch(function (err) {
     cloudBusy = false;
-    if (err && err.status === 401) {
-      clearCloudSession();
-      setCloudStatus('off');
-      renderCloudAuth();
-      return;
-    }
+    /* An expired session follows the shared path (sign out, plain
+       message) — no separate handling here. */
+    if (err && err.status === 401) { handleSyncError(err); return; }
     setCloudStatus('local');
   });
+  return cloudLastPush;
 }
 function scheduleCloudPush() {
   if (!cloudUser || cloudSuppressPush) return;
@@ -695,18 +711,28 @@ function scheduleCloudPush() {
    to the home screen. Never swaps the library out from under an open
    script — while you're editing, your work goes up first and the pull
    waits until you leave that screen. */
+/* Has this device been edited since local and cloud were last known
+   equal? The library stamp (touchLocal, real edits only) is the
+   clock — a navigation save alone must not count, or it would push
+   older local content over a newer cloud copy before we compare. */
+function localEditedSincePush() {
+  var lt = parseSyncTime(DB && DB.updatedAt);
+  if (!lt) return true; /* no library clock (pre-stamp library): keep the old push-first behaviour */
+  return lt > cloudLastPushAt;
+}
 function recheckCloud() {
   if (!cloudUser || cloudBusy || pendingClaim || cloudState === 'choosing' || cloudState === 'claim') return Promise.resolve();
-  if (cloudPushHandle) {
-    /* An edit is still inside its ~2s debounce: push it first, then
-       re-check — the local edit is the newest write, so it wins. */
-    clearTimeout(cloudPushHandle);
-    cloudPushHandle = null;
+  if (localEditedSincePush()) {
+    /* A real local edit is waiting: push it first, then re-check —
+       the local edit is the newest write, so it wins. */
+    if (cloudPushHandle) { clearTimeout(cloudPushHandle); cloudPushHandle = null; }
     return pushCloud().then(function () { return recheckCloud(); });
   }
-  if (localUnsynced) {
-    return pushCloud().then(function () { return recheckCloud(); });
-  }
+  /* No real edit waiting: cancel any push a navigation save just
+     scheduled, so it can't push older local content over a newer
+     cloud copy before we compare. */
+  if (cloudPushHandle) { clearTimeout(cloudPushHandle); cloudPushHandle = null; }
+  localUnsynced = false;
   var list = document.getElementById('view-list');
   if (!list || list.hidden) return Promise.resolve(); /* mid-edit: wait for home */
   return initialSync();
@@ -720,6 +746,9 @@ function recheckCloud() {
    pushes it then. Never signs the user out. */
 function flushCloudPushOnClose() {
   if (!cloudUser || cloudBusy) return;
+  /* Only flush a real edit — a navigation save alone must not push
+     older local content over a newer cloud copy on the way out. */
+  if (!localEditedSincePush()) return;
   if (!cloudPushHandle && !localUnsynced) return;
   if (cloudPushHandle) { clearTimeout(cloudPushHandle); cloudPushHandle = null; }
   /* The next load re-derives "newer" from timestamps, so clearing the
@@ -728,6 +757,100 @@ function flushCloudPushOnClose() {
   pushCloudRow(true).then(function () {
     if (!cloudBusy) setCloudStatus('synced');
   }).catch(function () { /* offline / unreachable: local copy stays safe */ });
+}
+/* ---- ↻ Update button (wizard) ----
+   Saves on the device, then checks the cloud — no need to go back to
+   My Scripts first. It never pulls a newer cloud copy over the open
+   script (that loads when you go back to All scripts), never loses a
+   local edit, and never signs you out. A 401 goes through the shared
+   expired-session path, like every other sync call. */
+var updateRunning = false;
+function setSavedNote(text) {
+  var note = document.getElementById('saved-note');
+  if (note) note.textContent = text;
+}
+function updateClock() {
+  return new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+function handleUpdate() {
+  var btn = document.getElementById('btn-update');
+  if (updateRunning) return;
+  /* A real unsynced edit is one that was already waiting before this
+     tap. save() below schedules a push of its own (it stamps the open
+     script), but that must NOT count as one — flushing it would push
+     older local content over a newer cloud copy before we compare. */
+  var hasUnsyncedEdit = localEditedSincePush();
+  save();
+  if (!cloudUser) {
+    setSavedNote('Update: you\u2019re signed out \u2014 sign in on My Scripts to sync');
+    return;
+  }
+  updateRunning = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Updating\u2026'; }
+  var done = function () {
+    updateRunning = false;
+    if (btn) { btn.disabled = false; btn.textContent = '\u21bb Update'; }
+  };
+  var flushed = false;
+  var flush;
+  if (hasUnsyncedEdit) {
+    flushed = true;
+    if (cloudBusy && cloudLastPush) flush = cloudLastPush;
+    else {
+      if (cloudPushHandle) { clearTimeout(cloudPushHandle); cloudPushHandle = null; }
+      flush = pushCloud();
+    }
+  } else {
+    /* No real edit was waiting: cancel the push save() just scheduled
+       and restore the pre-tap state, so the fetch below compares the
+       cloud against the library as it was. */
+    if (cloudPushHandle) { clearTimeout(cloudPushHandle); cloudPushHandle = null; }
+    localUnsynced = false;
+    flush = Promise.resolve();
+  }
+  flush.then(function () {
+    if (!cloudUser) {
+      setSavedNote('Update: your sign-in expired \u2014 sign in again on My Scripts.');
+      done(); return;
+    }
+    return fetchCloudRow().then(function (cloud) {
+      var cloudDB = cloud && cloud.db ? cloud.db : { scripts: [] };
+      var decision = decideSync(DB, cloudDB, cloud ? cloud.updatedAt : '');
+      if (decision.action === 'push') {
+        return pushCloud().then(function () {
+          if (!cloudUser) setSavedNote('Update: your sign-in expired \u2014 sign in again on My Scripts.');
+          else if (cloudState === 'local') setSavedNote('Updated \u2014 saved on this device, cloud unreachable, will retry');
+          else setSavedNote('Updated \u2014 saved to cloud \u00b7 ' + updateClock());
+          done();
+        });
+      }
+      if (decision.action === 'pull') {
+        /* Never swap the library out from under the open script: the
+           newer cloud copy loads when you go back to All scripts. */
+        setSavedNote('Updated \u2014 a newer copy is on the cloud \u2014 go to All scripts to load it');
+        done(); return;
+      }
+      if (decision.action === 'choose') {
+        /* Surface the existing conflict panel — it lives on the home
+           screen, so it shows when he goes back to All scripts. */
+        if (cloud && cloud.db) showConflict(DB, cloud);
+        setSavedNote('Updated \u2014 cloud and this device differ \u2014 go to All scripts to pick one');
+        done(); return;
+      }
+      setSavedNote(flushed ? 'Updated \u2014 saved to cloud \u00b7 ' + updateClock()
+                           : 'Updated \u2014 already up to date \u00b7 ' + updateClock());
+      done();
+    });
+  }).catch(function (err) {
+    if (err && err.status === 401) {
+      handleSyncError(err);
+      setSavedNote('Update: your sign-in expired \u2014 sign in again on My Scripts.');
+    } else {
+      setCloudStatus('local');
+      setSavedNote('Updated \u2014 saved on this device, cloud unreachable, will retry');
+    }
+    done();
+  });
 }
 function initCloud() {
   renderCloudAuth();
@@ -863,6 +986,7 @@ function setActs(s, n) {
 }
 function setFormat(s, format) {
   if (!FORMATS[format] || format === s.format) return;
+  touchLocal();
   s.format = format;
   s.teaserCount = FORMATS[format].teaser ? 3 : 0;
   var defActs = format === 'tv' ? (s.tvLength === '30' ? 4 : 5) : FORMATS[format].actsDefault;
@@ -872,6 +996,8 @@ function setFormat(s, format) {
 /* TV length: 30 min = teaser + 4 acts, ~22 scenes; 60 min = teaser + 5 acts, ~38. */
 function setTvLength(s, len) {
   if (len !== '30' && len !== '60') return;
+  if (len === s.tvLength) return;
+  touchLocal();
   s.tvLength = len;
   setActs(s, len === '30' ? 4 : 5);
   resizeScenes(s);
@@ -1425,7 +1551,7 @@ function blockRow(idx, bi, b) {
 function stepDraft(s) {
   var idx = Math.min(s.pos.draft || 0, s.scenes.length - 1);
   var sc = s.scenes[idx], def = sceneDefFor(s, idx), dp = draftStats(), tp = targetPages(s);
-  if (!sc.blocks.length) { sc.blocks.push({ t: 'action', x: '' }); save(); }
+  if (!sc.blocks.length) { sc.blocks.push({ t: 'action', x: '' }); touchLocal(); save(); }
   var h = '<div class="card"><h2>Writing — Scene ' + def.n + ' of ' + s.scenes.length + '</h2>' +
     '<p class="sub">' + esc(def.beat) + ' · ~' + def.pages + ' pages planned for this scene</p>' +
     '<p class="stat"><b>' + Math.round(dp.pages) + '</b> pages drafted · <b>' + dp.words.toLocaleString() + '</b> words · target ' + tp + ' pages</p>' +
@@ -1697,6 +1823,7 @@ document.addEventListener('click', function (e) {
   }
   if (el.id === 'btn-goto-outline') { currentStep = outlineIdx(s); renderStep(); return; }
   if (el.id === 'btn-goto-draft') { currentStep = draftIdx(s); renderStep(); return; }
+  if (el.id === 'btn-update') { handleUpdate(); return; }
   if (el.dataset.pager) {
     var key = el.dataset.pager, dir = parseInt(el.dataset.dir, 10);
     var total = posTotalFor(key, s);
