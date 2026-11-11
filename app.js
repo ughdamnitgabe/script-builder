@@ -350,7 +350,7 @@ function normalize(db) {
          genuinely unparsed text. */
       if (typeof sc.typeText !== 'string') sc.typeText = '';
       if (sc.typeText && sc.typeText !== serializeScene(sc)) {
-        var tp = parseTypeText(sc.typeText);
+        var tp = parseTypeText(sc.typeText, s);
         sc.slug = tp.slug;
         sc.blocks = tp.blocks;
         sc.typeText = serializeScene(sc);
@@ -1304,18 +1304,96 @@ function sceneText(sc) {
    WRONG scene. The rendered scene index is the truth instead. */
 var typeTextIdx = 0;
 function draftMode(s) { return s.pos && s.pos.draftMode === 'type' ? 'type' : 'cards'; }
+/* A character name with any trailing "(...)" direction stripped, for
+   matching: "GABE (V.O.)" matches the card name GABE. */
+function baseNameOf(line) {
+  return String(line || '').replace(/\s*\([^)]*\)\s*$/, '').replace(/^\s+|\s+$/g, '');
+}
+/* Names this script already knows: the five character cards first,
+   then any name already typed as a character cue in any scene. The
+   parser learns names as it goes, so a cue on line 2 makes a
+   lowercase "gabe" on line 20 a cue too. */
+function knownNamesFor(s) {
+  var names = [];
+  if (!s) return names;
+  CHAR_DEFS.forEach(function (d) {
+    var n = (s.chars && s.chars[d.key] && s.chars[d.key].name || '').trim().toUpperCase();
+    if (n && names.indexOf(n) === -1) names.push(n);
+  });
+  (s.scenes || []).forEach(function (sc) {
+    (sc.blocks || []).forEach(function (b) {
+      if (b.t === 'character') {
+        var n2 = baseNameOf((b.x || '').trim().toUpperCase());
+        if (n2 && names.indexOf(n2) === -1) names.push(n2);
+      }
+    });
+  });
+  return names;
+}
+/* A scene heading line, any case, optional period or hyphen after
+   the prefix: "INT. KITCHEN — NIGHT", "EXT- HAWAII BEACH – DAY",
+   "Ext day outside". Returns { heading, headingTyped, remainder }
+   or null. heading is prefix-normalised (INT. / EXT. / INT./EXT.)
+   and uppercased, for mid-scene heading blocks; headingTyped keeps
+   the line as typed, for the slugline (Cards mode stores slugs as
+   typed too). If a time-of-day word (DAY/NIGHT/...) is followed by
+   a real sentence — 3+ words, or a word that starts with a known
+   name — the heading ends right after the time token and the rest
+   becomes the remainder (a new action block); a one-word tail like
+   "DAY OUTSIDE" stays part of the heading. */
+function splitHeading(line, knownHas) {
+  var m = line.match(/^(int\/ext|int|ext)(?:[.\-–—]\s*|\s+)(.+)$/i);
+  if (!m) return null;
+  var pre = /^int\/ext/i.test(m[1]) ? 'INT./EXT.' : (/^int/i.test(m[1]) ? 'INT.' : 'EXT.');
+  var rest = m[2].replace(/^\s+|\s+$/g, '');
+  var tm = rest.match(/\b(DAY|NIGHT|DAWN|DUSK|MORNING|EVENING|LATER|CONTINUOUS)\b/i);
+  var headRest = rest, remainder = '';
+  if (tm) {
+    var after = rest.slice(tm.index + tm[0].length).replace(/^[–—\-,\s]+/, '').replace(/\s+$/g, '');
+    var words = after ? after.split(/\s+/) : [];
+    if (words.length >= 3 || (words.length && knownHas(words[0]))) {
+      headRest = rest.slice(0, tm.index + tm[0].length).replace(/\s+$/g, '');
+      remainder = after;
+    }
+  }
+  return {
+    heading: (pre + ' ' + headRest).toUpperCase(),
+    headingTyped: line.slice(0, m[0].length - m[2].length) + headRest,
+    remainder: remainder
+  };
+}
 /* Plain text -> { slug, blocks }. Blank line = block boundary.
    Consecutive same-kind lines merge into one block (joined with \n).
-   Rules, in order: first non-blank line that looks like a heading
-   becomes the slugline; CONT'D / (MORE) after a cue joins the
-   dialogue; transitions; a mid-scene INT./EXT. line is action, not a
-   character cue; a line starting with "(" is a paren; an ALL-CAPS
-   line (≤ 40 chars, at least one letter) is a character cue; after a
-   character cue or a paren comes dialogue, otherwise action. */
-function parseTypeText(text) {
+   Final Draft-style recognition, per line — a cue / heading /
+   transition / paren line always starts a new block and breaks a
+   merge; only consecutive plain lines of the same kind merge:
+   - known names (character cards + cues already in this script,
+     learned as parsing goes) are cues in ANY case, anywhere;
+   - a line starting with a known name in ALL CAPS plus more text
+     splits into cue + dialogue — but only inside one paragraph (no
+     blank line since the last line), so a serialised action block
+     re-parses as that block, never as a cue; the parenthetical form
+     ("MARA (whispering) Don't tell.") splits anywhere, since an
+     action line never takes that shape;
+   - a short line (1-3 words, no terminal . ! ?, every word
+     capitalised or all-caps; a 3-word line must be Title Case, so
+     an all-caps action line like THE CAR EXPLODES stays action) is
+     a cue — except right after a cue or paren, where the next line
+     is always dialogue;
+   - a heading line is its own action block (prefix normalised,
+     uppercased), split at the time token when a sentence follows;
+     the first heading line in the text becomes the slugline, kept
+     as typed; a heading breaks any merge, so the next action line
+     starts a new block;
+   - CONT'D / (MORE) after a cue joins the dialogue; transitions;
+     a line after a cue/paren/dialogue is dialogue, otherwise action. */
+function parseTypeText(text, s) {
   var lines = String(text || '').split('\n');
-  var slug = '', blocks = [], prev = null, lastKind = null, seenFirst = false;
-  function push(t, x) { var b = { t: t, x: x }; blocks.push(b); prev = b; lastKind = t; return b; }
+  var slug = '', blocks = [], prev = null, prevIsHeading = false, lastKind = null, seenFirst = false;
+  var known = knownNamesFor(s);
+  function knownHas(name) { return known.indexOf(String(name || '').toUpperCase()) !== -1; }
+  function learn(name) { var n = baseNameOf(String(name || '').toUpperCase()); if (n && known.indexOf(n) === -1) known.push(n); }
+  function push(t, x) { var b = { t: t, x: x }; blocks.push(b); prev = b; prevIsHeading = false; lastKind = t; return b; }
   lines.forEach(function (raw) {
     var line = raw.replace(/^\s+|\s+$/g, '');
     /* A blank line ends the current paragraph (prev) — lines stop
@@ -1323,10 +1401,21 @@ function parseTypeText(text) {
        blank line between EVERY block, so a dialogue paragraph still
        follows its character cue across one, and the round-trip
        (parse -> serialize -> parse) still gives the same blocks. */
-    if (!line) { prev = null; return; }
-    if (!seenFirst) {
-      seenFirst = true;
-      if (/^(INT\.|EXT\.|INT\/EXT\.|FADE IN)/i.test(line)) { slug = line; return; }
+    if (!line) { prev = null; prevIsHeading = false; return; }
+    var isFirst = !seenFirst;
+    seenFirst = true;
+    /* First non-blank line: a heading or FADE IN becomes the
+       slugline. A heading with a sentence after its time token
+       keeps only the heading part as the slug; the rest becomes an
+       action block. */
+    if (isFirst) {
+      var hd0 = splitHeading(line, knownHas);
+      if (hd0) {
+        slug = hd0.headingTyped;
+        if (hd0.remainder) push('action', hd0.remainder);
+        return;
+      }
+      if (/^FADE IN\b/i.test(line)) { slug = line; return; }
     }
     /* (CONT'D) / (MORE) right after a cue belongs to that dialogue —
        in print they are written with parens, and bare CONT'D shows
@@ -1336,25 +1425,70 @@ function parseTypeText(text) {
       else push('dialogue', line);
       return;
     }
+    /* Transitions. */
     if (/^(FADE IN|FADE OUT|CUT TO|DISSOLVE TO|SMASH CUT|MATCH CUT|TIME CUT|JUMP CUT|INTERCUT|MONTAGE)\b.*$/i.test(line) ||
         /^END\.?\s*$/i.test(line)) { push('transition', line.toUpperCase()); return; }
-    /* A location line later in the scene is a new slugline in the
-       story, not a person — keep it out of the character cues. */
-    if (/^(INT\.|EXT\.|INT\/EXT\.)/i.test(line)) {
-      if (prev && prev.t === 'action') prev.x += '\n' + line.toUpperCase();
-      else push('action', line.toUpperCase());
+    /* A heading later in the scene: its own action block, and it
+       breaks any merge — the next action line starts a new block. */
+    var hd = splitHeading(line, knownHas);
+    if (hd) {
+      push('action', hd.heading);
+      prevIsHeading = true;
+      if (hd.remainder) { push('action', hd.remainder); prevIsHeading = false; }
       return;
     }
+    /* A parenthetical is its own block. */
     if (line.charAt(0) === '(') { push('paren', line); return; }
-    if (line.length <= 40 && /[A-Z]/.test(line) && !/[a-z]/.test(line)) { push('character', line.toUpperCase()); return; }
+    /* Same-line split on a known name in ALL CAPS: "GABE I LOVE
+       BUZZBALLS" -> cue GABE + dialogue. Never on an unknown name,
+       and never across a blank line: a serialised action block that
+       starts with a known name must re-parse as that block. The one
+       exception is the parenthetical form — "MARA (whispering)
+       Don't tell." — which an action line never takes, so it splits
+       even on the first line. A plain "GABE I LOVE BUZZBALLS" on
+       the very first line stays action: start with a heading, or
+       put the cue on its own line. */
+    var sm = line.match(/^([A-Z][A-Z0-9'’\-.]*)(\s*\([^)]*\))?\s+(.+)$/);
+    if (sm && knownHas(sm[1]) && (prev !== null || sm[2])) {
+      var cueName = sm[1].toUpperCase();
+      push('character', cueName);
+      learn(cueName);
+      if (sm[2]) push('paren', sm[2].replace(/^\s+|\s+$/g, ''));
+      push('dialogue', sm[3]);
+      return;
+    }
+    /* A whole line that IS a known name, any case: "gabe", "Amelia". */
+    var base = baseNameOf(line);
+    if (base && knownHas(base)) { push('character', line.toUpperCase()); learn(base); return; }
+    /* Short lines are cues: 1-3 words, no terminal . ! ?, every word
+       capitalised or all-caps — a 3-word line must be Title Case, so
+       THE CAR EXPLODES stays action. Never right after a cue or a
+       paren: the next line there is always dialogue. */
+    if (!prev || (prev.t !== 'character' && prev.t !== 'paren')) {
+      var words = line.split(/\s+/);
+      var lastCh = line.charAt(line.length - 1);
+      if (words.length >= 1 && words.length <= 3 && '.!?'.indexOf(lastCh) === -1 && /[A-Za-z]/.test(line)) {
+        var allCaps = !/[a-z]/.test(line);
+        var titleCase = words.every(function (w) {
+          var c0 = w.charAt(0);
+          if (c0 < 'A' || c0 > 'Z') return false;
+          return !/[A-Z]/.test(w.slice(1).replace(/[^A-Za-z]/g, ''));
+        });
+        if ((words.length <= 2 && (allCaps || titleCase)) || (words.length === 3 && titleCase)) {
+          push('character', line.toUpperCase());
+          learn(line);
+          return;
+        }
+      }
+    }
     /* Dialogue vs action: inside one paragraph, lines merge into the
        block they follow; across a blank line, a new paragraph after
        a cue (or after dialogue) is still dialogue, anything else is
        action — and it starts a NEW block, it never merges across
-       the blank line. */
+       the blank line. A heading block never absorbs the next line. */
     if (prev && prev.t === 'dialogue') { prev.x += '\n' + line; return; }
     if (prev && (prev.t === 'character' || prev.t === 'paren')) { push('dialogue', line); return; }
-    if (prev && prev.t === 'action') { prev.x += '\n' + line; return; }
+    if (prev && prev.t === 'action' && !prevIsHeading) { prev.x += '\n' + line; return; }
     if (lastKind === 'character' || lastKind === 'paren' || lastKind === 'dialogue') { push('dialogue', line); return; }
     push('action', line);
   });
@@ -1391,7 +1525,7 @@ function parseTypeMode() {
   var sc = s.scenes[typeTextIdx];
   if (!sc) return false;
   var beforeSlug = sc.slug, beforeBlocks = JSON.stringify(sc.blocks);
-  var parsed = parseTypeText(ta.value);
+  var parsed = parseTypeText(ta.value, s);
   sc.slug = parsed.slug;
   sc.blocks = parsed.blocks;
   sc.typeText = serializeScene(sc);
