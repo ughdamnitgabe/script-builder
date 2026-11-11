@@ -1433,8 +1433,9 @@ function printCharacters(s) {
 }
 function printSceneRow(s, idx) {
   var sc = s.scenes[idx], def = sceneDefFor(s, idx), t = tagText(sc);
-  var h = '<div class="pscene"><p><span class="slug">' + esc((sc.slug || 'Scene ' + def.n).toUpperCase()) + '</span>' +
-    ' <span class="muted">(Scene ' + def.n + ' · ' + esc(def.beat) + ' · ~' + def.pages + ' pages' + (t ? ' · ' + esc(t) : '') + ')</span><br>' +
+  var slug = (sc.slug || '').trim();
+  var h = '<div class="pscene"><p>' + (slug ? '<span class="slug">' + esc(slug.toUpperCase()) + '</span> ' : '') +
+    '<span class="muted">(' + (slug ? '' : 'No scene heading yet · ') + 'Scene ' + def.n + ' · ' + esc(def.beat) + ' · ~' + def.pages + ' pages' + (t ? ' · ' + esc(t) : '') + ')</span><br>' +
     (sc.happens ? esc(sc.happens) : '<i class="muted">— empty —</i>') +
     (sc.turn ? '<br><b>Turn:</b> ' + esc(sc.turn) : '') +
     (sc.purpose ? '<br><b>Purpose:</b> ' + esc(sc.purpose) : '') +
@@ -1565,7 +1566,8 @@ function stepDraft(s) {
   for (var i = 0; i < s.scenes.length; i++) chips += '<button type="button" data-jump-draft="' + i + '"' + (i === idx ? ' class="on"' : '') + '>' + (i + 1) + '</button>';
   h += '<div class="chips scroll">' + chips + '</div>';
   h += pagerHtml('draft', idx, 'Card');
-  h += '<div class="card"><p class="slugline">' + esc((sc.slug || 'SCENE ' + def.n).toUpperCase()) + '</p>' +
+  var slug = (sc.slug || '').trim();
+  h += '<div class="card">' + (slug ? '<p class="slugline">' + esc(slug.toUpperCase()) + '</p>' : '<p class="muted">— No scene heading yet — add one in the Act card —</p>') +
     '<div class="btnrow"><button type="button" class="small" id="btn-toggle-notes">Hide scene notes</button></div>' +
     sceneNotesHtml(s, idx);
   h += '<div class="blocks" id="blocks">' + sc.blocks.map(function (b, bi) { return blockRow(idx, bi, b); }).join('') + '</div>' +
@@ -1614,8 +1616,10 @@ function wrapText(text, width) {
 }
 function sceneElements(s, idx) {
   var sc = s.scenes[idx], def = sceneDefFor(s, idx), els = [];
-  var heading = (sc.slug || '').trim().toUpperCase() || ('SCENE ' + def.n);
-  els.push({ kind: 'heading', lines: wrapText(heading, 60), blankBefore: true });
+  var heading = (sc.slug || '').trim().toUpperCase();
+  /* No slug, no heading: a real script never invents "SCENE 1" — the
+     scene's blocks still print, in order, with no heading line. */
+  if (heading) els.push({ kind: 'heading', lines: wrapText(heading, 60), blankBefore: true });
   var lastChar = '';
   (sc.blocks || []).forEach(function (b) {
     var x = (b.x || '').trim();
