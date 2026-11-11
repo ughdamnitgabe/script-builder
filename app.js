@@ -316,7 +316,10 @@ function normalize(db) {
       notesHidden: (typeof oldPos.notesHidden === 'boolean' ? oldPos.notesHidden : undefined),
       /* Draft mode survives only as 'cards' or 'type'; anything else
          means "never set" and the draft defaults to Cards. */
-      draftMode: (oldPos.draftMode === 'type' || oldPos.draftMode === 'cards') ? oldPos.draftMode : undefined };
+      draftMode: (oldPos.draftMode === 'type' || oldPos.draftMode === 'cards') ? oldPos.draftMode : undefined,
+      /* Type view survives only as 'write', 'split' or 'page'; anything
+         else means "never set" and the view defaults by screen width. */
+      typeView: (oldPos.typeView === 'write' || oldPos.typeView === 'split' || oldPos.typeView === 'page') ? oldPos.typeView : undefined };
     if (typeof s.updatedAt !== 'string') s.updatedAt = '';
     if (!s.story) s.story = {};
     if (typeof s.story.byline !== 'string') s.story.byline = 'Gabe Arredondo';
@@ -1737,6 +1740,7 @@ function cycleTypeElement(dir) {
   ta.selectionStart = ta.selectionEnd = newCaret;
   ta.focus();
   updateTypeIndicator();
+  refreshTypePreview();
   return true;
 }
 /* The current-element status line in the Type toolbar. In-memory
@@ -1758,6 +1762,106 @@ function updateTypeIndicator() {
   else if (span.index === 0 && (parsed.slug || '').trim()) label = 'Scene Heading';
   else label = 'Action';
   el.textContent = 'Element: ' + label + ' — Tab to change';
+}
+/* ---------------- Type mode views: Write / Split / Page ------------
+   Type mode can show the scene as a formatted page while he types:
+   Write is the textarea alone (as before), Split is textarea beside
+   the page, Page is the page alone. The page is a read-only view of
+   the CURRENT scene, rendered from an in-memory parse of the live
+   textarea text — it never writes back, never saves, never moves the
+   caret. The view is remembered per script in s.pos.typeView. */
+function defaultTypeView(width) { return (width || 0) >= 900 ? 'split' : 'write'; }
+function typeViewFor(s) {
+  var saved = s && s.pos && s.pos.typeView;
+  if (saved === 'write' || saved === 'split' || saved === 'page') {
+    /* A saved Split on a narrow screen falls back to Write for this
+       render only — the saved preference is not overwritten. */
+    if (saved === 'split' && window.innerWidth < 900) return 'write';
+    return saved;
+  }
+  return defaultTypeView(window.innerWidth);
+}
+function applyTypeView(view) {
+  var wrap = document.getElementById('type-wrap');
+  if (!wrap) return;
+  wrap.classList.remove('tv-write', 'tv-split', 'tv-page');
+  wrap.classList.add('tv-' + view);
+  var btns = document.querySelectorAll('[data-typeview]');
+  for (var i = 0; i < btns.length; i++) {
+    var on = btns[i].getAttribute('data-typeview') === view;
+    if (on) { btns[i].classList.add('on'); btns[i].setAttribute('aria-pressed', 'true'); }
+    else { btns[i].classList.remove('on'); btns[i].removeAttribute('aria-pressed'); }
+  }
+  refreshTypePreview();
+}
+/* The formatted page for the current scene: the slugline on top, then
+   the parsed blocks laid out with the print element classes — the
+   same elements print uses, with no pagination (continuous view;
+   authoritative pagination stays in print). Each element's first
+   line carries its block index so the caret-follow can find it. */
+function typePreviewHtml(parsed, sceneNo, pages) {
+  var els = sceneElementsFrom(parsed.slug, parsed.blocks);
+  if (!els.length) return '<p class="muted">Start typing — the formatted page appears here.</p>';
+  var h = '<p class="sp-meta">Scene ' + sceneNo + ' · ~' + pages + ' pages</p>';
+  var first = true;
+  els.forEach(function (el) {
+    if (el.blankBefore && !first) h += '<p class="sp-blank">&nbsp;</p>';
+    first = false;
+    el.lines.forEach(function (ln, li) {
+      h += '<p class="' + clsFor(el.kind) + '"' + (li === 0 ? ' data-bi="' + el.bi + '"' : '') + '>' + esc(ln) + '</p>';
+    });
+  });
+  return h;
+}
+var typePreviewRaf = 0;
+function scheduleTypePreview() {
+  if (typePreviewRaf) return;
+  if (typeof requestAnimationFrame === 'function') {
+    typePreviewRaf = requestAnimationFrame(function () {
+      typePreviewRaf = 0;
+      refreshTypePreview();
+    });
+  } else {
+    refreshTypePreview();
+  }
+}
+function refreshTypePreview() {
+  var pv = document.getElementById('type-preview');
+  var ta = document.getElementById('type-text');
+  if (!pv || !ta) return;
+  var s = cur();
+  if (!s || draftMode(s) !== 'type') return;
+  if (typeViewFor(s) === 'write') { pv.innerHTML = ''; return; }
+  var sc = s.scenes[typeTextIdx];
+  if (!sc) { pv.innerHTML = ''; return; }
+  var parsed = parseTypeText(ta.value, s, { blocks: sc.blocks, slug: sc.slug });
+  var pages = Math.round(estPages(ta.value) * 10) / 10;
+  pv.innerHTML = typePreviewHtml(parsed, sceneDefFor(s, typeTextIdx).n, pages);
+  followTypePreviewCaret();
+}
+/* The page follows the caret: when the caret paragraph's element is
+   outside the pane's visible area, scroll just enough to bring it
+   into view. Only when out of view — never a yank on every keystroke.
+   Read-only: it never touches the textarea or the caret. */
+function followTypePreviewCaret() {
+  var pv = document.getElementById('type-preview');
+  var ta = document.getElementById('type-text');
+  if (!pv || !ta) return;
+  var s = cur();
+  if (!s || draftMode(s) !== 'type') return;
+  if (typeViewFor(s) === 'write') return;
+  var sc = s.scenes[typeTextIdx];
+  if (!sc) return;
+  var caret = (typeof ta.selectionStart === 'number') ? ta.selectionStart : ta.value.length;
+  var span = typeCaretParagraph(ta.value, caret);
+  var parsed = parseTypeText(ta.value, s, { blocks: sc.blocks, slug: sc.slug });
+  var idxs = parsed.paraMap[span.index] || [];
+  var bi = idxs.length ? idxs[0] : (span.index === 0 && (parsed.slug || '').trim() ? -1 : null);
+  if (bi === null) return;
+  var target = pv.querySelector('[data-bi="' + bi + '"]');
+  if (!target) return;
+  var pr = pv.getBoundingClientRect(), tr = target.getBoundingClientRect();
+  if (tr.top < pr.top || tr.bottom > pr.bottom) target.scrollIntoView({ block: 'nearest' });
 }
 /* Blocks -> plain text: slugline first, then one block per paragraph,
    separated by a blank line. Round-trip (parse -> serialize -> parse)
@@ -2708,14 +2812,26 @@ function stepDraftType(s, idx, sc, def) {
   var initIdxs = initParsed.paraMap[0] || [];
   var initLabel = initIdxs.length ? elementLabel(initParsed.blocks[initIdxs[0]], s) :
     ((initParsed.slug || '').trim() ? 'Scene Heading' : 'Action');
+  /* The live page: Write hides it, Split/Page render it from the
+     same in-memory parse as the indicator. */
+  var view = typeViewFor(s);
+  var initPreview = view === 'write' ? '' :
+    typePreviewHtml(initParsed, def.n, Math.round(estPages(typeValue) * 10) / 10);
   var h = '<div class="card">' +
     '<div class="btnrow"><button type="button" class="small" id="btn-toggle-notes">' + (notesHidden ? 'Show scene notes' : 'Hide scene notes') + '</button>' +
     '<button type="button" class="small" id="btn-cycle-element" title="Change this paragraph’s element — same as Tab">⇥ Element</button>' +
     '<span class="muted" id="type-element-indicator">Element: ' + initLabel + ' — Tab to change</span></div>' +
+    '<div class="seg" role="group" aria-label="Type view">' +
+    '<button type="button" data-typeview="write"' + (view === 'write' ? ' class="on" aria-pressed="true"' : '') + '>Write</button>' +
+    '<button type="button" data-typeview="split"' + (view === 'split' ? ' class="on" aria-pressed="true"' : '') + '>Split</button>' +
+    '<button type="button" data-typeview="page"' + (view === 'page' ? ' class="on" aria-pressed="true"' : '') + '>Page</button></div>' +
     sceneNotesHtml(s, idx, notesHidden) +
-    '<label>Type the scene<span class="hint">Just type — no tapping, no picker. Enter is a new line.</span>' +
+    '<div id="type-wrap" class="type-wrap tv-' + view + '">' +
+    '<label class="type-write">Type the scene<span class="hint">Just type — no tapping, no picker. Enter is a new line.</span>' +
     '<textarea id="type-text" class="type-text" spellcheck="false" placeholder="INT. KITCHEN — NIGHT\n\nHe stirs the pot, listening.\n\nMARA\nWe have to leave tonight.">' + esc(typeValue) + '</textarea></label>' +
-    '<p class="muted">Type like a script — INT./EXT. for the heading, a name in CAPS for who speaks, then their lines. It sorts itself into blocks when you leave the page.</p>' +
+    '<div id="type-preview" class="type-preview" aria-hidden="true">' + initPreview + '</div>' +
+    '</div>' +
+    '<p class="muted">Type like a script — INT./EXT. for the heading, a name in CAPS for who speaks, then their lines. It sorts itself into blocks when you leave the page. In Split or Page view the formatted page updates as you type.</p>' +
     '<div class="draft-sticky">' +
     '<div class="btnrow"><button type="button" class="small" data-prevscene' + (idx === 0 ? ' disabled' : '') + '>← Prev Scene</button>' +
     (idx < s.scenes.length - 1
@@ -2759,23 +2875,37 @@ function wrapText(text, width) {
   if (cur) lines.push(cur);
   return lines.length ? lines : [''];
 }
-function sceneElements(s, idx) {
-  var sc = s.scenes[idx], def = sceneDefFor(s, idx), els = [];
-  var heading = (sc.slug || '').trim().toUpperCase();
+/* The elements of one scene, from its slugline and blocks — the same
+   list print paginates. `bi` is the block's index (the slugline
+   element is -1) so the live preview can tag each element for
+   caret-follow. Print ignores the extra field. */
+function sceneElementsFrom(slug, blocks) {
+  var els = [];
+  var heading = (slug || '').trim().toUpperCase();
   /* No slug, no heading: a real script never invents "SCENE 1" — the
      scene's blocks still print, in order, with no heading line. */
-  if (heading) els.push({ kind: 'heading', lines: wrapText(heading, 60), blankBefore: true });
+  if (heading) els.push({ kind: 'heading', lines: wrapText(heading, 60), blankBefore: true, bi: -1 });
   var lastChar = '';
-  (sc.blocks || []).forEach(function (b) {
+  (blocks || []).forEach(function (b, bi) {
     var x = (b.x || '').trim();
     if (!x) return;
-    if (b.t === 'character') { lastChar = x.toUpperCase(); els.push({ kind: 'character', lines: wrapText(lastChar, 60), blankBefore: true }); }
-    else if (b.t === 'dialogue') els.push({ kind: 'dialogue', charName: lastChar, lines: wrapText(x, 35), blankBefore: false });
-    else if (b.t === 'paren') els.push({ kind: 'paren', lines: wrapText(x, 30), blankBefore: false });
-    else if (b.t === 'transition') els.push({ kind: 'transition', lines: wrapText(x.toUpperCase(), 60), blankBefore: true });
-    else els.push({ kind: 'action', lines: wrapText(x, 60), blankBefore: true });
+    if (b.t === 'character') { lastChar = x.toUpperCase(); els.push({ kind: 'character', lines: wrapText(lastChar, 60), blankBefore: true, bi: bi }); }
+    else if (b.t === 'dialogue') els.push({ kind: 'dialogue', charName: lastChar, lines: wrapText(x, 35), blankBefore: false, bi: bi });
+    else if (b.t === 'paren') els.push({ kind: 'paren', lines: wrapText(x, 30), blankBefore: false, bi: bi });
+    else if (b.t === 'transition') els.push({ kind: 'transition', lines: wrapText(x.toUpperCase(), 60), blankBefore: true, bi: bi });
+    else els.push({ kind: 'action', lines: wrapText(x, 60), blankBefore: true, bi: bi });
   });
   return els;
+}
+function sceneElements(s, idx) {
+  var sc = s.scenes[idx];
+  return sceneElementsFrom(sc.slug, sc.blocks);
+}
+/* Element kind -> print class, shared by the paginator and the live
+   Type preview. */
+function clsFor(kind) {
+  return { heading: 'sp-heading', action: 'sp-action', character: 'sp-char', dialogue: 'sp-dia',
+           paren: 'sp-paren', transition: 'sp-trans', fade: 'sp-fade', center: 'sp-center' }[kind] || 'sp-action';
 }
 function paginateScript(s) {
   var els = [{ kind: 'fade', lines: ['FADE IN:'], blankBefore: false }];
@@ -2796,10 +2926,6 @@ function paginateScript(s) {
   function remaining() { return LINES_PER_PAGE - curLines.length; }
   function newPage() { pages.push(curLines); curLines = []; }
   function addLine(cls, text) { curLines.push({ cls: cls, text: text }); }
-  function clsFor(kind) {
-    return { heading: 'sp-heading', action: 'sp-action', character: 'sp-char', dialogue: 'sp-dia',
-             paren: 'sp-paren', transition: 'sp-trans', fade: 'sp-fade', center: 'sp-center' }[kind] || 'sp-action';
-  }
   els.forEach(function (el) {
     var lines = el.lines.slice();
     var needBlank = el.blankBefore && curLines.length > 0;
@@ -2972,7 +3098,7 @@ document.addEventListener('input', function (e) {
        and navigation, never while typing. */
     var sT = cur(), idxT = Math.min(sT.pos.draft || 0, sT.scenes.length - 1);
     var scT = sT.scenes[idxT];
-    if (scT) { scT.typeText = el.value; touchLocal(); save(); updateTypeIndicator(); }
+    if (scT) { scT.typeText = el.value; touchLocal(); save(); updateTypeIndicator(); scheduleTypePreview(); }
   }
   if (el.dataset.path) { setPath(cur(), el.dataset.path, el.value); touchLocal(); save(); }
   if (el.dataset.scene) handleSceneField(el, false);
@@ -2988,13 +3114,13 @@ document.addEventListener('focusout', function (e) {
    a tap, or focusing the textarea. In-memory parse only — nothing is
    written back or saved by moving the caret. */
 document.addEventListener('keyup', function (e) {
-  if (e.target && e.target.id === 'type-text') updateTypeIndicator();
+  if (e.target && e.target.id === 'type-text') { updateTypeIndicator(); followTypePreviewCaret(); }
 });
 document.addEventListener('click', function (e) {
-  if (e.target && e.target.id === 'type-text') updateTypeIndicator();
+  if (e.target && e.target.id === 'type-text') { updateTypeIndicator(); followTypePreviewCaret(); }
 });
 document.addEventListener('focusin', function (e) {
-  if (e.target && e.target.id === 'type-text') updateTypeIndicator();
+  if (e.target && e.target.id === 'type-text') { updateTypeIndicator(); followTypePreviewCaret(); }
 });
 document.addEventListener('change', function (e) {
   var el = e.target;
@@ -3082,6 +3208,17 @@ document.addEventListener('click', function (e) {
     parseTypeMode();
     var dm = el.dataset.draftmode;
     if (dm === 'cards' || dm === 'type') { s.pos.draftMode = dm; touchLocal(); save(); renderStep(); }
+    return;
+  }
+  if (el.dataset.typeview) {
+    /* Write / Split / Page in Type mode: a view switch, not a
+       re-render — toggling the class keeps the textarea, caret and
+       scroll where they were. The choice is remembered per script. */
+    var tv = el.dataset.typeview;
+    if (tv === 'write' || tv === 'split' || tv === 'page') {
+      s.pos.typeView = tv; touchLocal(); save();
+      applyTypeView(typeViewFor(s));
+    }
     return;
   }
   if (el.id === 'btn-toggle-notes') {

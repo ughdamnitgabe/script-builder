@@ -123,6 +123,33 @@ button:disabled { opacity: .45; cursor: default; }
    skips this one — it would cap it at 360px. */
 .type-text { font-family: "Courier New", Courier, monospace; font-size: 16px; line-height: 1.5; min-height: 60vh; resize: vertical; white-space: pre-wrap; }
 #type-element-indicator { align-self: center; }
+/* Type mode views: Write / Split / Page. The preview pane is a
+   read-only formatted page for the current scene. It reuses the
+   print element classes (sp-*) with its own layout — the print CSS
+   below is never touched — and the indents are the print proportions
+   (character 2.2in, dialogue 1in + 3.5in wide, paren 1.6in, out of a
+   6in text width), so the page looks the same at any pane width and
+   never overflows a phone. Split is hidden below 900px: the view
+   falls back to Write there. */
+.type-wrap.tv-write #type-preview { display: none; }
+.type-wrap.tv-page .type-write { display: none; }
+.type-wrap.tv-split { display: flex; gap: 16px; align-items: flex-start; }
+.type-wrap.tv-split .type-write { flex: 1 1 0; min-width: 0; }
+.type-wrap.tv-split #type-preview { flex: 1 1 0; min-width: 0; }
+#type-preview { background: #fff; border: 1.5px solid var(--line); border-radius: 10px; padding: 20px 20px 20px 28px; max-height: 60vh; overflow-y: auto; }
+#type-preview, #type-preview p { font-family: "Courier New", Courier, monospace; font-size: 12pt; line-height: 12pt; }
+#type-preview p { margin: 0; }
+#type-preview .sp-heading { text-transform: uppercase; }
+#type-preview .sp-char { margin-left: 37%; text-transform: uppercase; }
+#type-preview .sp-dia { margin-left: 17%; width: 58%; }
+#type-preview .sp-paren { margin-left: 27%; }
+#type-preview .sp-trans { text-align: right; text-transform: uppercase; }
+#type-preview .sp-meta { color: var(--muted); font-size: 11pt; margin-bottom: 12pt; }
+@media (max-width: 899px) {
+  [data-typeview="split"] { display: none; }
+  .type-wrap.tv-split { display: block; }
+  .type-wrap.tv-split #type-preview { display: none; }
+}
 /* Block-deleted undo bar. [hidden] needs the override: the class sets
    display:flex, which would otherwise beat the hidden attribute. */
 .undobar { display: flex; gap: 10px; align-items: center; background: #fdf3d7; border: 1.5px solid #e8c96a; border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
