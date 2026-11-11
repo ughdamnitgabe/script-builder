@@ -101,8 +101,22 @@ button:disabled { opacity: .45; cursor: default; }
 .resume { font-weight: 800; color: var(--accent); }
 .script-row .progress { height: 8px; margin: 8px 0 2px; }
 /* Writing view: scene notes + screenplay blocks */
-.slugline { font-family: "Courier New", Courier, monospace; font-weight: 700; font-size: 18px; margin: 10px 0 4px; }
+.slugline-input { font-family: "Courier New", Courier, monospace; font-weight: 700; font-size: 18px; text-transform: uppercase; margin: 10px 0 4px; }
 .notes { background: #fffbe6; border: 1.5px solid #d9c25a; border-radius: 10px; padding: 12px; margin: 12px 0; }
+/* Draft chips, grouped by act: a small label over each act's chips, and
+   a dot on scenes that already have draft text. */
+.chip-group { margin: 6px 0; }
+.chip-group-label { display: block; font-size: 13px; font-weight: 700; color: var(--muted); margin: 6px 0 2px; }
+#draft-chips .chips { margin: 2px 0; }
+.chips button .dot { color: var(--accent); font-size: 10px; }
+.chips button.on .dot { color: #fff; }
+/* The add-row + scene-nav row stay pinned at the bottom of the draft
+   card while the blocks scroll, just above the fixed bottom nav bar. */
+.draft-sticky { position: sticky; bottom: calc(84px + env(safe-area-inset-bottom, 0px)); background: var(--card); padding: 10px 0 6px; margin-top: 12px; border-top: 1px solid var(--line); z-index: 5; }
+/* Block-deleted undo bar. [hidden] needs the override: the class sets
+   display:flex, which would otherwise beat the hidden attribute. */
+.undobar { display: flex; gap: 10px; align-items: center; background: #fdf3d7; border: 1.5px solid #e8c96a; border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
+.undobar[hidden] { display: none; }
 .notes h3 { margin: 12px 0 4px; font-size: 16px; }
 .notes h3:first-child { margin-top: 0; }
 .notes p { margin: 6px 0; }
@@ -110,6 +124,9 @@ button:disabled { opacity: .45; cursor: default; }
 .blocks { margin-top: 12px; }
 .block { margin-bottom: 10px; }
 .blockbar { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+/* The block-type picker lives in the bar: it takes the spare width
+   instead of the global select rule's width:100%. */
+.blockbar select { width: auto; flex: 1 1 auto; min-width: 0; font-size: 15px; padding: 9px 8px; min-height: 42px; }
 .block textarea { font-family: "Courier New", Courier, monospace; font-size: 16px; min-height: 64px; }
 .b-character textarea { text-align: center; text-transform: uppercase; font-weight: 700; }
 .b-dialogue textarea { margin-left: 12%; width: 88%; }

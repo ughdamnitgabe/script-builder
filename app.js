@@ -77,7 +77,8 @@ var CHAR_DEFS = [
 ];
 var ARC_STAGES = ['', 'Beginning', 'Middle', 'End'];
 
-/* Screenplay blocks for the writing view. Tap the type to change it. */
+/* Screenplay blocks for the writing view. The type is picked from a
+   <select> in the block bar; Enter guesses the next block's type. */
 var BLOCK_TYPES = [
   { t: 'action',    label: 'Action',     ph: 'Action — what we see and hear.' },
   { t: 'character', label: 'CHARACTER',  ph: 'CHARACTER NAME' },
@@ -88,10 +89,6 @@ var BLOCK_TYPES = [
 function blockTypeDef(t) {
   for (var i = 0; i < BLOCK_TYPES.length; i++) if (BLOCK_TYPES[i].t === t) return BLOCK_TYPES[i];
   return BLOCK_TYPES[0];
-}
-function nextBlockType(t) {
-  for (var i = 0; i < BLOCK_TYPES.length; i++) if (BLOCK_TYPES[i].t === t) return BLOCK_TYPES[(i + 1) % BLOCK_TYPES.length].t;
-  return 'action';
 }
 
 /* ---------------- state ---------------- */
@@ -165,7 +162,10 @@ function normalize(db) {
     s.pos = { step: oldPos.step || 0, act1: oldPos.act1 || 0,
       act2: oldPos.act2a || oldPos.act2 || 0, act3: oldPos.act3 || 0,
       act4: oldPos.act4 || 0, act5: oldPos.act5 || 0,
-      char: oldPos.char || 0, draft: oldPos.draft || 0 };
+      char: oldPos.char || 0, draft: oldPos.draft || 0,
+      /* notesHidden survives only as a real boolean; anything else
+         means "never set" and the draft picks its own default. */
+      notesHidden: (typeof oldPos.notesHidden === 'boolean' ? oldPos.notesHidden : undefined) };
     if (typeof s.updatedAt !== 'string') s.updatedAt = '';
     if (!s.story) s.story = {};
     if (typeof s.story.byline !== 'string') s.story.byline = 'Gabe Arredondo';
@@ -1210,6 +1210,8 @@ function pagerHtml(key, idx, label) {
 
 /* ---------------- wizard ---------------- */
 function renderStep() {
+  /* Leaving the step ends the delete-undo window (see refreshDraft). */
+  lastDeletedBlock = null;
   var s = cur(), steps = wizardSteps(s);
   if (currentStep < 0) currentStep = 0;
   if (currentStep >= steps.length) currentStep = steps.length - 1;
@@ -1219,8 +1221,21 @@ function renderStep() {
   $('#view-list').hidden = true;
   $('#view-wizard').hidden = false;
   $('#nav-bottom').hidden = false;
-  $('#btn-prev').disabled = currentStep === 0;
-  $('#btn-next').textContent = currentStep === steps.length - 1 ? '← All scripts' : 'Next →';
+  /* On the Draft step the bottom bar walks scenes, not wizard steps —
+     the old "Next →" relabelled to "← All scripts" and exited the
+     wizard mid-draft. */
+  if (step.id === 'draft') {
+    var di = Math.min(s.pos.draft || 0, s.scenes.length - 1);
+    $('#btn-prev').disabled = di === 0;
+    $('#btn-prev').textContent = '← Prev Scene';
+    $('#btn-next').disabled = di >= s.scenes.length - 1;
+    $('#btn-next').textContent = 'Next Scene →';
+  } else {
+    $('#btn-prev').disabled = currentStep === 0;
+    $('#btn-prev').textContent = '← Back';
+    $('#btn-next').disabled = false;
+    $('#btn-next').textContent = currentStep === steps.length - 1 ? '← All scripts' : 'Next →';
+  }
   $('#wiz-title').textContent = 'Script ' + s.id + ' — ' + (s.title && s.title !== 'Untitled ' + s.id ? s.title : 'Untitled');
   $('#wiz-meta').textContent = (s.genre || 'No genre yet') + ' · ' + FORMATS[s.format].label + ' · ' + (s.format === 'streaming' ? 'continuous' : s.acts + ' act' + (s.acts > 1 ? 's' : ''));
   var p = progressFor(s), dp = draftStatsFor(s);
@@ -1507,9 +1522,9 @@ function stepOutline(s) {
 }
 
 /* ---------------- writing view ---------------- */
-function sceneNotesHtml(s, idx) {
+function sceneNotesHtml(s, idx, hidden) {
   var sc = s.scenes[idx], def = sceneDefFor(s, idx);
-  var h = '<div class="notes" id="notes-panel"><h3>📋 Scene ' + def.n + ' notes</h3>';
+  var h = '<div class="notes" id="notes-panel"' + (hidden ? ' hidden' : '') + '><h3>📋 Scene ' + def.n + ' notes</h3>';
   h += '<p><b>Heading:</b> ' + esc(sc.slug || '—') + '</p>';
   if (sc.happens) h += '<p><b>What happens:</b> ' + esc(sc.happens) + '</p>';
   if (sc.turn) h += '<p><b>The turn:</b> ' + esc(sc.turn) + '</p>';
@@ -1545,10 +1560,134 @@ function sceneNotesHtml(s, idx) {
 }
 function blockRow(idx, bi, b) {
   var def = blockTypeDef(b.t);
+  var total = cur().scenes[idx].blocks.length;
+  /* A real picker, not the old one-tap-per-step cycle: the <select>
+     jumps straight to any of the five types. */
+  var typeOpts = BLOCK_TYPES.map(function (t) {
+    return '<option value="' + t.t + '"' + (t.t === b.t ? ' selected' : '') + '>' + t.label + '</option>';
+  }).join('');
   return '<div class="block b-' + b.t + '" data-bi="' + bi + '">' +
-    '<div class="blockbar"><button type="button" class="small" data-blocktype="' + idx + ':' + bi + '">' + def.label + ' ▾</button>' +
+    '<div class="blockbar"><select class="small" data-blocktype="' + idx + ':' + bi + '" aria-label="Block type">' + typeOpts + '</select>' +
+    '<button type="button" class="small" data-moveblock="' + idx + ':' + bi + '" data-dir="-1"' + (bi === 0 ? ' disabled' : '') + ' title="Move this block up">↑</button>' +
+    '<button type="button" class="small" data-moveblock="' + idx + ':' + bi + '" data-dir="1"' + (bi === total - 1 ? ' disabled' : '') + ' title="Move this block down">↓</button>' +
+    '<button type="button" class="small" data-insertblock="' + idx + ':' + bi + '" title="Insert a block below this one">＋ below</button>' +
     '<button type="button" class="small ghost" data-blockdel="' + idx + ':' + bi + '">×</button></div>' +
-    '<textarea data-block="' + idx + ':' + bi + '" placeholder="' + esc(def.ph) + '">' + esc(b.x || '') + '</textarea></div>';
+    '<textarea data-block="' + idx + ':' + bi + '"' + (b.t === 'character' ? ' list="char-names"' : '') + ' placeholder="' + esc(def.ph) + '">' + esc(b.x || '') + '</textarea></div>';
+}
+/* Type the Enter key guesses for the block after this one: a character
+   cue is always followed by dialogue, dialogue by a character cue. */
+function nextBlockTypeAfter(t) {
+  return { character: 'dialogue', dialogue: 'character', action: 'action', paren: 'dialogue', transition: 'action' }[t] || 'action';
+}
+/* Insert a block after bi, type inferred from the block above it. */
+function insertBlock(idx, bi) {
+  var s = cur(), sc = s.scenes[idx];
+  if (!sc) return;
+  var type = sc.blocks[bi] ? nextBlockTypeAfter(sc.blocks[bi].t) : 'action';
+  sc.blocks.splice(bi + 1, 0, { t: type, x: '' });
+  touchLocal(); save();
+  refreshDraft(bi + 1);
+}
+/* Swap a block with its neighbour, mirroring moveScene(). */
+function moveBlock(idx, bi, dir) {
+  var s = cur(), blocks = s.scenes[idx].blocks, j = bi + dir;
+  if (j < 0 || j >= blocks.length) return;
+  var tmp = blocks[bi]; blocks[bi] = blocks[j]; blocks[j] = tmp;
+  touchLocal(); save();
+  refreshDraft(j);
+}
+/* Character names for the datalist: the five character cards first,
+   then any name already typed as a character cue in this script. */
+function charNameOptionsHtml(s) {
+  var names = [];
+  CHAR_DEFS.forEach(function (d) {
+    var n = (s.chars[d.key] && s.chars[d.key].name || '').trim().toUpperCase();
+    if (n && names.indexOf(n) === -1) names.push(n);
+  });
+  s.scenes.forEach(function (sc) {
+    (sc.blocks || []).forEach(function (b) {
+      if (b.t === 'character') {
+        var n2 = (b.x || '').trim().toUpperCase();
+        if (n2 && names.indexOf(n2) === -1) names.push(n2);
+      }
+    });
+  });
+  return names.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('');
+}
+function draftBlocksHtml(s, idx) {
+  return s.scenes[idx].blocks.map(function (b, bi) { return blockRow(idx, bi, b); }).join('');
+}
+/* Draft scene chips, grouped by act: number + truncated slug, with a
+   dot on scenes that already have draft text, plus a jump to the
+   first scene with nothing written yet. */
+function draftChipsHtml(s, idx) {
+  var h = '';
+  for (var a = 1; a <= s.acts; a++) {
+    var start = actStart(s, a), count = s.actCounts[a - 1] || 0;
+    if (!count) continue;
+    h += '<div class="chip-group"><span class="chip-group-label">' + esc(actStepLabel(s, a)) + '</span><div class="chips">';
+    for (var i = 0; i < count; i++) {
+      var gi = start + i, sc = s.scenes[gi], def = sceneDefFor(s, gi);
+      var slug = (sc.slug || '').trim();
+      var written = !!(sceneText(sc) || '').trim();
+      var label = String(def.n) + (slug ? ' · ' + slug : '');
+      if (label.length > 22) label = label.slice(0, 21) + '…';
+      h += '<button type="button" data-jump-draft="' + gi + '"' + (gi === idx ? ' class="on"' : '') +
+        (written ? ' data-written="1"' : '') + ' title="' + esc(slug ? slug : 'Scene ' + def.n) + '">' +
+        (written ? '<span class="dot">●</span> ' : '') + esc(label) + '</button>';
+    }
+    h += '</div></div>';
+  }
+  var firstEmpty = -1;
+  for (var j = 0; j < s.scenes.length; j++) { if (!(sceneText(s.scenes[j]) || '').trim()) { firstEmpty = j; break; } }
+  h += '<div class="btnrow"><button type="button" class="small" data-next-unwritten' + (firstEmpty < 0 ? ' disabled' : '') + '>Next unwritten →</button></div>';
+  return h;
+}
+/* The last block deleted in this draft view, for the Undo affordance:
+   { idx, bi, block }. Cleared by any other in-draft action (via
+   refreshDraft) or by leaving the step (via renderStep) — it clears
+   on the next action, never on a delay. */
+var lastDeletedBlock = null;
+function updateUndoBar() {
+  var bar = document.getElementById('draft-undo');
+  if (!bar) return;
+  if (lastDeletedBlock) {
+    bar.hidden = false;
+    bar.innerHTML = '<span>Block deleted.</span><button type="button" class="small" id="btn-undo-block">Undo</button>';
+  } else {
+    bar.hidden = true;
+    bar.innerHTML = '';
+  }
+}
+/* Rebuild only the draft blocks + chips after an in-draft structural
+   change, instead of renderStep() rebuilding the whole step and
+   scrolling to the top. Typing position, scroll and focus survive:
+   the slugline input and notes panel are never touched, and the
+   target textarea is focused again afterwards. */
+function refreshDraft(focusBi, keepUndo) {
+  if (!keepUndo) lastDeletedBlock = null;
+  var s = cur(), idx = Math.min(s.pos.draft || 0, s.scenes.length - 1);
+  var blocksEl = document.getElementById('blocks');
+  if (!blocksEl) { renderStep(); return; }
+  var y = window.scrollY || 0;
+  blocksEl.innerHTML = draftBlocksHtml(s, idx);
+  var chipsEl = document.getElementById('draft-chips');
+  if (chipsEl) chipsEl.innerHTML = draftChipsHtml(s, idx);
+  var dl = document.getElementById('char-names');
+  if (dl) dl.innerHTML = charNameOptionsHtml(s);
+  updateDraftTotals();
+  updateUndoBar();
+  blocksEl.querySelectorAll('textarea').forEach(growTextarea);
+  if (window.scrollTo) window.scrollTo(0, y);
+  if (typeof focusBi === 'number' && focusBi >= 0) {
+    var tas = blocksEl.querySelectorAll('textarea');
+    var ta = tas[focusBi];
+    if (ta) {
+      ta.focus();
+      try { var pos = ta.value ? ta.value.length : 0; ta.setSelectionRange(pos, pos); } catch (err) {}
+      if (typeof ta.scrollIntoView === 'function') { try { ta.scrollIntoView({ block: 'nearest' }); } catch (err2) {} }
+    }
+  }
 }
 function stepDraft(s) {
   var idx = Math.min(s.pos.draft || 0, s.scenes.length - 1);
@@ -1562,22 +1701,35 @@ function stepDraft(s) {
     '<div class="btnrow"><button type="button" data-print="draft-all">🖨 Print / Save script as PDF</button>' +
     '<button type="button" data-preview="draft">👁 Preview script pages</button>' +
     '<button type="button" class="small" data-act="goto-outline">📄 Back to outline</button></div></div>';
-  var chips = '';
-  for (var i = 0; i < s.scenes.length; i++) chips += '<button type="button" data-jump-draft="' + i + '"' + (i === idx ? ' class="on"' : '') + '>' + (i + 1) + '</button>';
-  h += '<div class="chips scroll">' + chips + '</div>';
+  var chipsHtml = draftChipsHtml(s, idx);
+  h += '<div id="draft-chips">' + chipsHtml + '</div>';
   h += pagerHtml('draft', idx, 'Card');
   var slug = (sc.slug || '').trim();
-  h += '<div class="card">' + (slug ? '<p class="slugline">' + esc(slug.toUpperCase()) + '</p>' : '<p class="muted">— No scene heading yet — add one in the Act card —</p>') +
-    '<div class="btnrow"><button type="button" class="small" id="btn-toggle-notes">Hide scene notes</button></div>' +
-    sceneNotesHtml(s, idx);
-  h += '<div class="blocks" id="blocks">' + sc.blocks.map(function (b, bi) { return blockRow(idx, bi, b); }).join('') + '</div>' +
+  /* Notes start collapsed once this scene has written blocks, open on
+     a fresh scene; an explicit toggle (s.pos.notesHidden) always wins. */
+  var hasWritten = sc.blocks.some(function (b) { return (b.x || '').trim(); });
+  var notesHidden = (typeof s.pos.notesHidden === 'boolean') ? s.pos.notesHidden : hasWritten;
+  h += '<div class="card">' +
+    '<label>Scene heading<span class="hint">All caps — e.g. INT. KITCHEN — NIGHT. Prints as the slugline.</span>' +
+    '<input type="text" class="slugline-input" data-scene="' + idx + '" data-field="slug" placeholder="INT. KITCHEN — NIGHT" value="' + esc(sc.slug || '') + '"></label>' +
+    (slug ? '' : '<p class="muted">— No scene heading yet — type it in the box above —</p>') +
+    '<div class="btnrow"><button type="button" class="small" id="btn-toggle-notes">' + (notesHidden ? 'Show scene notes' : 'Hide scene notes') + '</button></div>' +
+    sceneNotesHtml(s, idx, notesHidden);
+  h += '<datalist id="char-names">' + charNameOptionsHtml(s) + '</datalist>';
+  h += '<div class="blocks" id="blocks">' + draftBlocksHtml(s, idx) + '</div>' +
+    '<div id="draft-undo" class="undobar" hidden></div>' +
+    '<div class="draft-sticky">' +
     '<div class="btnrow"><button type="button" class="small" data-addblock="action" data-idx="' + idx + '">+ Action</button>' +
     '<button type="button" class="small" data-addblock="character" data-idx="' + idx + '">+ Character</button>' +
     '<button type="button" class="small" data-addblock="dialogue" data-idx="' + idx + '">+ Dialogue</button>' +
-    '<button type="button" class="small ghost" data-act="goto-outline">Done — see the outline</button></div>' +
-    '<div class="btnrow">' + (idx < s.scenes.length - 1
-      ? '<button type="button" class="primary" data-nextscene>Next Scene →</button>'
-      : '<button type="button" class="primary" data-act="goto-outline">Done — see the outline</button>') + '</div></div>';
+    '<button type="button" class="small" data-addblock="paren" data-idx="' + idx + '">+ (aside)</button>' +
+    '<button type="button" class="small" data-addblock="transition" data-idx="' + idx + '">+ Transition</button></div>' +
+    '<div class="btnrow"><button type="button" class="small" data-prevscene' + (idx === 0 ? ' disabled' : '') + '>← Prev Scene</button>' +
+    (idx < s.scenes.length - 1
+      ? '<button type="button" class="primary" data-nextscene>Next Scene →</button>' +
+        '<button type="button" class="small ghost" data-act="goto-outline">Done — see the outline</button>'
+      : '<button type="button" class="primary" data-act="goto-outline">Done — see the outline</button>') +
+    '</div></div></div>';
   return h;
 }
 function updateDraftTotals() {
@@ -1797,7 +1949,16 @@ function handleSceneField(el, rerender) {
 }
 function handleBlockField(el) {
   var parts = el.dataset.block.split(':'), idx = parseInt(parts[0], 10), bi = parseInt(parts[1], 10);
-  cur().scenes[idx].blocks[bi].x = el.value;
+  var b = cur().scenes[idx].blocks[bi];
+  var v = el.value;
+  /* Character cues and transitions print uppercased, so keep what he
+     types uppercased too — a lowercase "mara" can never silently
+     become a different speaker from "MARA" in print. */
+  if (b && (b.t === 'character' || b.t === 'transition') && v !== v.toUpperCase()) {
+    v = v.toUpperCase();
+    el.value = v;
+  }
+  if (b) b.x = v;
   touchLocal();
   save();
   updateDraftTotals();
@@ -1813,6 +1974,13 @@ document.addEventListener('change', function (e) {
   var el = e.target;
   if (el.dataset.path) { setPath(cur(), el.dataset.path, el.value); touchLocal(); save(); renderStep(); }
   if (el.dataset.scene) handleSceneField(el, true);
+  /* Block type picker (draft): jump straight to the chosen type and
+     keep the cursor in the same block — no full re-render. */
+  if (el.dataset.blocktype) {
+    var p = el.dataset.blocktype.split(':'), bi4 = parseInt(p[0], 10), bj4 = parseInt(p[1], 10);
+    var blk = cur().scenes[bi4].blocks[bj4];
+    if (blk) { blk.t = el.value; touchLocal(); save(); refreshDraft(bj4); }
+  }
 });
 document.addEventListener('click', function (e) {
   var el = e.target.closest('button');
@@ -1820,8 +1988,20 @@ document.addEventListener('click', function (e) {
   var s = cur();
   if (el.dataset.open) { openScript(parseInt(el.dataset.open, 10)); return; }
   if (el.id === 'btn-back-list') { save(); renderList(); recheckCloud(); return; }
-  if (el.id === 'btn-prev') { if (currentStep > 0) { currentStep--; renderStep(); } return; }
+  if (el.id === 'btn-prev') {
+    /* On the Draft step the bottom bar walks scenes (fix 10); the
+       wizard step changes only everywhere else. */
+    if (wizardSteps(s)[currentStep].id === 'draft') {
+      if ((s.pos.draft || 0) > 0) { s.pos.draft--; save(); renderStep(); }
+      return;
+    }
+    if (currentStep > 0) { currentStep--; renderStep(); } return;
+  }
   if (el.id === 'btn-next') {
+    if (wizardSteps(s)[currentStep].id === 'draft') {
+      if ((s.pos.draft || 0) < s.scenes.length - 1) { s.pos.draft++; save(); renderStep(); }
+      return;
+    }
     if (currentStep >= wizardSteps(s).length - 1) { save(); renderList(); recheckCloud(); }
     else { currentStep++; renderStep(); }
     return;
@@ -1854,9 +2034,22 @@ document.addEventListener('click', function (e) {
   if (el.dataset.act === 'goto-outline') { currentStep = outlineIdx(s); renderStep(); return; }
   if (el.dataset.act === 'goto-draft') { currentStep = draftIdx(s); renderStep(); return; }
   if (el.hasAttribute('data-nextscene')) { s.pos.draft = Math.min(s.scenes.length - 1, (s.pos.draft || 0) + 1); save(); renderStep(); return; }
+  if (el.hasAttribute('data-prevscene')) { if ((s.pos.draft || 0) > 0) { s.pos.draft--; save(); renderStep(); } return; }
+  if (el.hasAttribute('data-next-unwritten')) {
+    var firstEmpty = -1;
+    for (var fe = 0; fe < s.scenes.length; fe++) { if (!(sceneText(s.scenes[fe]) || '').trim()) { firstEmpty = fe; break; } }
+    if (firstEmpty >= 0) { s.pos.draft = firstEmpty; save(); renderStep(); }
+    return;
+  }
   if (el.id === 'btn-toggle-notes') {
+    /* Persisted in s.pos.notesHidden: the next re-render shows the
+       same state, instead of the panel coming back on every tap. */
     var np = document.getElementById('notes-panel');
-    if (np) { np.hidden = !np.hidden; el.textContent = np.hidden ? 'Show scene notes' : 'Hide scene notes'; }
+    var hideNow = np ? !np.hidden : true;
+    s.pos.notesHidden = hideNow;
+    touchLocal(); save();
+    if (np) np.hidden = hideNow;
+    el.textContent = hideNow ? 'Show scene notes' : 'Hide scene notes';
     return;
   }
   if (el.dataset.format) { setFormat(s, el.dataset.format); save(); renderStep(); return; }
@@ -1871,22 +2064,41 @@ document.addEventListener('click', function (e) {
     var idx = parseInt(el.dataset.idx, 10);
     s.scenes[idx].blocks.push({ t: el.dataset.addblock, x: '' });
     touchLocal();
-    save(); renderStep();
-    var tas = document.querySelectorAll('#blocks textarea');
-    if (tas.length) tas[tas.length - 1].focus();
+    save();
+    refreshDraft(s.scenes[idx].blocks.length - 1);
     return;
   }
-  if (el.dataset.blocktype) {
-    var p = el.dataset.blocktype.split(':'), bi2 = parseInt(p[0], 10), bj = parseInt(p[1], 10);
-    s.scenes[bi2].blocks[bj].t = nextBlockType(s.scenes[bi2].blocks[bj].t);
-    touchLocal();
-    save(); renderStep(); return;
+  if (el.dataset.moveblock) {
+    var pm = el.dataset.moveblock.split(':'), mi = parseInt(pm[0], 10), mb = parseInt(pm[1], 10);
+    moveBlock(mi, mb, parseInt(el.dataset.dir, 10));
+    return;
+  }
+  if (el.dataset.insertblock) {
+    var pi = el.dataset.insertblock.split(':'), ii = parseInt(pi[0], 10), ib = parseInt(pi[1], 10);
+    insertBlock(ii, ib);
+    return;
+  }
+  if (el.id === 'btn-undo-block') {
+    var u = lastDeletedBlock;
+    lastDeletedBlock = null;
+    if (u && s.scenes[u.idx]) {
+      var at = Math.min(u.bi, s.scenes[u.idx].blocks.length);
+      s.scenes[u.idx].blocks.splice(at, 0, u.block);
+      touchLocal(); save();
+      refreshDraft(at);
+    } else { updateUndoBar(); }
+    return;
   }
   if (el.dataset.blockdel) {
     var p2 = el.dataset.blockdel.split(':'), ci = parseInt(p2[0], 10), cj = parseInt(p2[1], 10);
-    s.scenes[ci].blocks.splice(cj, 1);
+    /* No confirm — undo instead: stash the block and show the Undo
+       bar, so a stray tap costs one tap to fix, not a retype. */
+    var removed = s.scenes[ci].blocks.splice(cj, 1)[0];
+    if (removed) lastDeletedBlock = { idx: ci, bi: cj, block: removed };
     touchLocal();
-    save(); renderStep(); updateDraftTotals(); return;
+    save();
+    refreshDraft(Math.min(cj, s.scenes[ci].blocks.length - 1), true);
+    return;
   }
   if (el.dataset.print === 'draft-all') { doPrint('draft'); return; }
   if (el.dataset.print === 'outline-all') { doPrint('outline', null); return; }
@@ -2046,6 +2258,17 @@ document.addEventListener('change', function (e) {
 });
 document.addEventListener('keydown', function (e) {
   if ((e.metaKey || e.ctrlKey) && e.key === 'p') { /* browser print; #print-view must already be built — use the buttons. */ }
+  /* Enter in a draft block: a new block right below it, type inferred
+     from this one — a scene can be typed end to end without tapping
+     the + buttons. Shift+Enter is left alone (newline in the block). */
+  if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey &&
+      e.target && e.target.dataset && e.target.dataset.block) {
+    e.preventDefault();
+    var parts = e.target.dataset.block.split(':');
+    var idx = parseInt(parts[0], 10), bi = parseInt(parts[1], 10);
+    var sc2 = cur().scenes[idx];
+    if (sc2 && sc2.blocks[bi]) insertBlock(idx, bi);
+  }
 });
 /* Automatic re-checks (no Sync Now press needed): when the app regains
    focus or becomes visible again, pull the newest copy if there is one.
