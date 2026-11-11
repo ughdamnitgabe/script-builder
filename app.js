@@ -12,6 +12,7 @@
 
 var LS_KEY = 'scriptBuilder.v1';
 var WORDS_PER_PAGE = 250; /* rough screenplay estimate: ~250 words ≈ 1 page */
+var SNAP_MAX = 20; /* snapshots kept per script — a 2-week script, with room to spare */
 /* Industry-standard script pages: US Letter, 1in top/bottom/right, 1.5in left
    margins = 6in of text. Courier 12pt, single spaced = 6 lines per inch,
    9in of text per page. 53 lines per page leaves a safe rounding margin. */
@@ -239,6 +240,7 @@ function blankScript(n) {
     id: n, title: 'Untitled ' + n, genre: '',
     format: 'feature', tvLength: '60', acts: 3, actCounts: [10, 22, 10], teaserCount: 0,
     method: 'gabe', methodBeats: {},
+    snaps: [], /* saved copies of this script — see the Snapshots section */
     /* pos = where he left off, so any script reopens on the exact card. */
     pos: { step: 0, act1: 0, act2: 0, act3: 0, act4: 0, act5: 0, char: 0, draft: 0 },
     updatedAt: '',
@@ -355,6 +357,16 @@ function normalize(db) {
       }
     });
     if (!s.cleanup) s.cleanup = { read: false, beats: false, turns: false, hero: false, dialogue: false, pages: false, ending: false };
+    /* Snapshots: plain data inside the script, so they ride autosave,
+       export/import and cloud sync like everything else. Validate the
+       shape, newest first, keep the last 20. */
+    if (!Array.isArray(s.snaps)) s.snaps = [];
+    s.snaps = s.snaps.filter(function (sn) {
+      return sn && typeof sn.id === 'string' && typeof sn.at === 'string' &&
+        sn.data && typeof sn.data === 'object' && !Array.isArray(sn.data);
+    });
+    s.snaps.sort(function (a, b) { return (b.at || '') < (a.at || '') ? -1 : 1; });
+    if (s.snaps.length > SNAP_MAX) s.snaps.length = SNAP_MAX;
   });
   return db;
 }
@@ -609,12 +621,17 @@ function cloudSyncTime(cloudDB, cloudUpdatedAt) {
 /* Two libraries with the same scripts and content are identical even
    when their last-worked stamps differ — save() re-stamps the open
    script on every save, so a stamp-only difference must never count
-   as a newer copy on either side. */
+   as a newer copy on either side. Saved copies are ignored the same
+   way: a saved copy is a copy of content, not new writing, so a
+   local-only copy (an automatic one on first open, not yet pushed)
+   must never manufacture a "different" — or every morning's first
+   open would end in a fake sync conflict. The copy still rides up
+   with the next real edit's push. */
 function sameContent(a, b) {
   function strip(db) {
     var c = JSON.parse(JSON.stringify(db || { scripts: [] }));
     delete c.updatedAt;
-    (c.scripts || []).forEach(function (s) { delete s.updatedAt; });
+    (c.scripts || []).forEach(function (s) { delete s.updatedAt; delete s.snaps; });
     return c;
   }
   return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
@@ -1101,6 +1118,159 @@ function deleteScript(id) {
   renderList();
 }
 
+/* ---------------- snapshots: save the old ones ----------------
+   One script, many saved copies. A snapshot is a deep copy of the
+   whole script at that moment (story, characters, beats, acts,
+   scenes, draft blocks, method — everything) stored on the script
+   itself as s.snaps, newest first. The copy never carries a snaps
+   list of its own, so snapshots can't nest and grow the save.
+   Because they are plain data inside the script object, they ride
+   autosave, export/import and cloud sync exactly like the rest of
+   the script — no new storage, no new sync code. Revision colours
+   are deliberately NOT here: they belong to a locked production
+   script, not a first draft. */
+var snapMsg = ''; /* one-line result shown in the snapshots panel */
+function snapDayKey(d) { return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+function fmtSnapAt(iso) {
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' +
+    d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+function snapshotCopy(s) {
+  var c = JSON.parse(JSON.stringify(s));
+  delete c.snaps;
+  return c;
+}
+function snapshotStats(data) {
+  var scenes = (data && Array.isArray(data.scenes)) ? data.scenes : [];
+  var words = 0;
+  scenes.forEach(function (sc) { words += wordCount(sceneText(sc)); });
+  return { scenes: scenes.length, pages: words / WORDS_PER_PAGE };
+}
+/* Does this script have anything worth saving yet? A fresh script
+   (42 blank cards, nothing typed) does not get auto-snapshots. The
+   byline is a default on every script, not something he wrote — it
+   never counts as content. */
+function scriptHasContent(s) {
+  var found = false;
+  function anyStr(o, skip) {
+    if (!o || found) return;
+    Object.keys(o).forEach(function (k) { if (k !== skip && typeof o[k] === 'string' && o[k].trim()) found = true; });
+  }
+  anyStr(s.story, 'byline'); anyStr(s.beats); anyStr(s.methodBeats);
+  ['pro', 'ant', 'sup1', 'sup2', 'sup3'].forEach(function (k) {
+    if (s.chars && s.chars[k] && (s.chars[k].name || '').trim()) found = true;
+  });
+  if ((s.notes || '').trim() || (s.learned || '').trim()) found = true;
+  (s.scenes || []).forEach(function (sc) {
+    if ((sc.happens || '').trim() || (sc.turn || '').trim() || (sc.draft || '').trim() ||
+        (sc.typeText || '').trim() || (sc.blocks && sc.blocks.length)) found = true;
+  });
+  return found;
+}
+function takeSnapshot(s, label, quiet) {
+  if (!s) return null;
+  /* In Type mode with the wizard showing, parse what was just typed
+     first — otherwise the snapshot would hold stale blocks. When
+     the wizard is hidden (opening from the list) there is nothing
+     on screen to parse, and leaving the wizard already parsed it. */
+  if (!document.getElementById('view-wizard').hidden) parseTypeMode();
+  var now = new Date();
+  var snap = { id: 'snap-' + now.getTime().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+    at: now.toISOString(), day: snapDayKey(now), label: label || 'Snapshot', data: snapshotCopy(s) };
+  if (!Array.isArray(s.snaps)) s.snaps = [];
+  s.snaps.unshift(snap);
+  if (s.snaps.length > SNAP_MAX) s.snaps.length = SNAP_MAX;
+  if (quiet) {
+    /* Auto-snapshot only: write it to this device and stop. No
+       touchLocal (the library clock is the last-write-wins clock —
+       stamping it would make merely opening a script look like a
+       newer edit and push local over a newer cloud copy) and no
+       cloud push. It rides up with the next real edit instead. */
+    persistLocal();
+  } else {
+    touchLocal(); save();
+  }
+  return snap;
+}
+/* One automatic snapshot per calendar day, the first time a script
+   with written content is opened that day. Never twice in a day,
+   never on an empty script, never overwriting an existing one. */
+function maybeAutoSnapshot(s) {
+  if (!s || !scriptHasContent(s)) return false;
+  var today = snapDayKey(new Date());
+  /* Suppressed only by an AUTO snapshot already taken today — a manual
+     snapshot (or one imported from another device) dated today must not
+     suppress the daily fallback of the script's CURRENT state. */
+  var hasToday = (s.snaps || []).some(function (sn) { return sn.day === today && sn.label === 'Auto'; });
+  if (hasToday) return false;
+  takeSnapshot(s, 'Auto', true);
+  return true;
+}
+function restoreSnapshot(s, snapId) {
+  if (!s) return false;
+  var snap = null;
+  (s.snaps || []).forEach(function (sn) { if (sn.id === snapId) snap = sn; });
+  if (!snap || !snap.data) return false;
+  /* Save where he is first — a restore can never lose work. */
+  takeSnapshot(s, 'Before restore ' + fmtSnapAt(new Date().toISOString()));
+  var data = snap.data;
+  Object.keys(data).forEach(function (k) { if (k !== 'id') s[k] = data[k]; });
+  /* The snapshot's copy never carried a snaps list, so s.snaps —
+     now holding the pre-restore snapshot — survives untouched.
+     Re-normalize to fill any field a newer app version added since
+     the snapshot was taken. */
+  normalize(DB);
+  currentStep = Math.min(s.pos.step || 0, wizardSteps(s).length - 1);
+  snapMsg = 'Restored the snapshot from ' + fmtSnapAt(snap.at) + ' — your version from just before is saved as a snapshot too.';
+  var panel = document.getElementById('snapshots-panel');
+  if (panel) panel.hidden = false;
+  touchLocal(); save();
+  /* renderStep() parses the Type textarea first — but the step-body
+     still holds the PRE-restore textarea. Drop it, or the old text
+     would be parsed back into the restored scene. */
+  var staleTa = document.getElementById('type-text');
+  if (staleTa) staleTa.remove();
+  renderStep();
+  return true;
+}
+function deleteSnapshot(s, snapId) {
+  if (!s) return false;
+  var snap = null;
+  (s.snaps || []).forEach(function (sn) { if (sn.id === snapId) snap = sn; });
+  if (!snap) return false;
+  if (!confirm('Delete the snapshot from ' + fmtSnapAt(snap.at) + '? You can\'t undo this.')) return false;
+  s.snaps = s.snaps.filter(function (sn) { return sn.id !== snapId; });
+  snapMsg = '';
+  touchLocal(); save();
+  renderSnapshots();
+  return true;
+}
+function renderSnapshots() {
+  var s = cur();
+  var panel = document.getElementById('snapshots-panel');
+  if (!panel || !s) return;
+  var btn = document.getElementById('btn-snapshots');
+  var n = (s.snaps || []).length;
+  if (btn) btn.textContent = '📸 Snapshots' + (n ? ' (' + n + ')' : '');
+  var msg = document.getElementById('snapshot-msg');
+  if (msg) { msg.textContent = snapMsg || ''; msg.hidden = !snapMsg; }
+  var list = document.getElementById('snapshot-list');
+  if (!list) return;
+  if (!n) {
+    list.innerHTML = '<p class="muted">No snapshots yet. Take one before a big rewrite or cleanup week — restoring never loses work, your current version is saved as a snapshot first.</p>';
+    return;
+  }
+  list.innerHTML = s.snaps.map(function (sn) {
+    var st = snapshotStats(sn.data);
+    return '<div class="snap-row"><span class="snap-body"><b>' + esc(sn.label || 'Snapshot') + '</b> · ' + esc(fmtSnapAt(sn.at)) +
+      '<br><span class="muted">' + st.scenes + ' scenes · ~' + Math.round(st.pages) + ' pages drafted</span></span>' +
+      '<span class="snap-actions"><button type="button" class="small" data-snap-restore="' + esc(sn.id) + '">Restore</button>' +
+      '<button type="button" class="small ghost" data-snap-del="' + esc(sn.id) + '">Delete</button></span></div>';
+  }).join('');
+}
+
 /* ---------------- dates ---------------- */
 function fmt(d) { return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }); }
 function fmtISO(iso) {
@@ -1474,6 +1644,10 @@ function renderList() {
 function openScript(id) {
   currentId = id;
   currentStep = Math.min(cur().pos.step || 0, wizardSteps(cur()).length - 1);
+  /* First open of the day with written content gets an automatic
+     snapshot — a fallback he never has to remember. Never more
+     than one a day, never on an empty script. */
+  maybeAutoSnapshot(cur());
   renderStep();
   window.scrollTo(0, 0);
 }
@@ -1548,6 +1722,7 @@ function renderStep() {
   else if (step.id === 'draft') body.innerHTML = stepDraft(s);
   else if (step.act) body.innerHTML = stepScenes(s, step.act);
   body.querySelectorAll('textarea').forEach(growTextarea);
+  renderSnapshots();
   window.scrollTo(0, 0);
 }
 
@@ -2439,6 +2614,14 @@ document.addEventListener('click', function (e) {
   if (el.id === 'btn-goto-outline') { currentStep = outlineIdx(s); renderStep(); return; }
   if (el.id === 'btn-goto-draft') { currentStep = draftIdx(s); renderStep(); return; }
   if (el.id === 'btn-update') { handleUpdate(); return; }
+  if (el.id === 'btn-snapshots') {
+    var snapPanel = document.getElementById('snapshots-panel');
+    if (snapPanel) { snapPanel.hidden = !snapPanel.hidden; if (!snapPanel.hidden) renderSnapshots(); }
+    return;
+  }
+  if (el.id === 'btn-snapshot') { snapMsg = ''; takeSnapshot(s, 'Snapshot'); renderSnapshots(); return; }
+  if (el.dataset.snapRestore) { restoreSnapshot(s, el.dataset.snapRestore); return; }
+  if (el.dataset.snapDel) { deleteSnapshot(s, el.dataset.snapDel); return; }
   /* Tappable step pills at the top of the wizard: jump straight to
      that section to edit it. renderStep() saves first (same as
      Next/Back), so what he just typed is kept. Out-of-range or

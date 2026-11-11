@@ -215,3 +215,8 @@ body.show-print #print-view .sp-pagenum { position: absolute; top: 0.5in; right:
 .mckee p { margin: 6px 0 0; }
 .collap { border: 1.5px solid #bbb; border-radius: 10px; padding: 10px 12px; margin: 12px 0; }
 .collap summary { font-weight: 700; cursor: pointer; }
+
+/* ---- Snapshots: one row per saved copy, newest first. ---- */
+.snap-row { display: flex; gap: 10px; justify-content: space-between; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--line); }
+.snap-row .snap-body { flex: 1; min-width: 0; }
+.snap-row .snap-actions { display: flex; gap: 6px; flex: 0 0 auto; }

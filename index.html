@@ -91,9 +91,17 @@
         <button class="small" id="btn-goto-outline" type="button">📄 Outline</button>
         <button class="small" id="btn-goto-draft" type="button">✍️ Draft</button>
         <button class="small" id="btn-update" type="button">↻ Update</button>
+        <button class="small" id="btn-snapshots" type="button">📸 Snapshots</button>
         <span class="spacer"></span>
         <span class="pill" id="script-status-pill">Not started</span>
       </div>
+    </div>
+    <div class="card noprint" id="snapshots-panel" hidden>
+      <h3>📸 Snapshots</h3>
+      <p class="sub">Save a copy of this script as it is right now, so you can always go back. Restoring never loses work — your current version is saved as a snapshot first. Keeps the last 20.</p>
+      <p class="saved" id="snapshot-msg" hidden></p>
+      <div class="btnrow"><button class="small primary" id="btn-snapshot" type="button">📸 Take snapshot</button></div>
+      <div id="snapshot-list"></div>
     </div>
     <div id="step-body"></div>
   </section>
