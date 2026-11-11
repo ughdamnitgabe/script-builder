@@ -1229,7 +1229,8 @@ function renderStep() {
   $('#script-status-pill').textContent = scriptStatus(s);
   var dots = steps.map(function (st, i) {
     var cls = i === currentStep ? 'on' : (i < currentStep ? 'done' : '');
-    return '<span class="' + cls + '">' + st.label + '</span>';
+    return '<button type="button" class="' + cls + '" data-step="' + i + '" aria-label="Go to ' + esc(st.label) + '"' +
+      (i === currentStep ? ' aria-current="step"' : '') + '>' + esc(st.label) + '</button>';
   }).join('');
   $('#step-dots').innerHTML = dots;
   var body = $('#step-body');
@@ -1824,6 +1825,15 @@ document.addEventListener('click', function (e) {
   if (el.id === 'btn-goto-outline') { currentStep = outlineIdx(s); renderStep(); return; }
   if (el.id === 'btn-goto-draft') { currentStep = draftIdx(s); renderStep(); return; }
   if (el.id === 'btn-update') { handleUpdate(); return; }
+  /* Tappable step pills at the top of the wizard: jump straight to
+     that section to edit it. renderStep() saves first (same as
+     Next/Back), so what he just typed is kept. Out-of-range or
+     non-numeric values are ignored; the current pill just stays. */
+  if (el.dataset.step !== undefined && el.dataset.step !== '') {
+    var si = parseInt(el.dataset.step, 10);
+    if (!isNaN(si) && si >= 0 && si < wizardSteps(s).length) { currentStep = si; renderStep(); }
+    return;
+  }
   if (el.dataset.pager) {
     var key = el.dataset.pager, dir = parseInt(el.dataset.dir, 10);
     var total = posTotalFor(key, s);

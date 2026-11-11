@@ -63,9 +63,13 @@ button:disabled { opacity: .45; cursor: default; }
 .script-row .m { color: var(--muted); font-size: 14px; margin-top: 2px; }
 .script-row .go { font-size: 22px; color: var(--muted); }
 .stepdots { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 4px; }
-.stepdots span { font-size: 12px; font-weight: 700; padding: 5px 9px; border-radius: 20px; background: #eee; color: var(--muted); }
-.stepdots span.on { background: var(--accent); color: #fff; }
-.stepdots span.done { background: #cfe3d2; color: var(--accent); }
+.stepdots span, .stepdots button { font-size: 12px; font-weight: 700; padding: 5px 9px; border-radius: 20px; background: #eee; color: var(--muted); }
+.stepdots span.on, .stepdots button.on { background: var(--accent); color: #fff; }
+.stepdots span.done, .stepdots button.done { background: #cfe3d2; color: var(--accent); }
+/* The pills are real buttons now, but must look exactly as they did as
+   spans — override the global button rule (52px min-height, 18px type,
+   1.5px border) so they stay small pills and don't grow the header. */
+.stepdots button { min-height: 0; border: 0; line-height: 1.5; cursor: pointer; font-family: inherit; }
 .scene { border: 1.5px solid #bbb; border-top: 4px solid #c0392b; border-left: 5px solid var(--accent); border-radius: 10px; padding: 14px; margin-bottom: 12px; background: #fff; }
 .scene .head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
 .scene .head b { font-size: 16px; }
