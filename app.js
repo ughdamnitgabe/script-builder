@@ -349,8 +349,21 @@ function normalize(db) {
          after every Cards-mode edit, so this only ever fires for
          genuinely unparsed text. */
       if (typeof sc.typeText !== 'string') sc.typeText = '';
+      /* A Tabbed empty paragraph (typed, no text) cannot outlive its
+         paragraph: drop it here unless the saved text still has an
+         empty paragraph at that index — otherwise, after a reload,
+         a content paragraph that shifted into its index would inherit
+         its type on the first re-parse. */
+      if (Array.isArray(sc.blocks)) {
+        var spans0 = typeParagraphSpans(sc.typeText || '');
+        sc.blocks = sc.blocks.filter(function (b) {
+          if (!(b && b.typed === true && !(b.x || '').trim())) return true;
+          var sp = spans0[b.para];
+          return !!(sp && (sc.typeText || '').slice(sp.start, sp.end).replace(/\s/g, '') === '');
+        });
+      }
       if (sc.typeText && sc.typeText !== serializeScene(sc)) {
-        var tp = parseTypeText(sc.typeText, s);
+        var tp = parseTypeText(sc.typeText, s, { blocks: sc.blocks, slug: sc.slug });
         sc.slug = tp.slug;
         sc.blocks = tp.blocks;
         sc.typeText = serializeScene(sc);
@@ -1386,14 +1399,21 @@ function splitHeading(line, knownHas) {
      as typed; a heading breaks any merge, so the next action line
      starts a new block;
    - CONT'D / (MORE) after a cue joins the dialogue; transitions;
-     a line after a cue/paren/dialogue is dialogue, otherwise action. */
-function parseTypeText(text, s) {
+     a line after a cue/paren/dialogue is dialogue, otherwise action.
+   Returns { slug, blocks, paraMap } — paraMap[paragraph] is the list
+   of block indices that paragraph produced (a paragraph is a run of
+   non-blank lines; the slugline's paragraph maps to [] unless a
+   remainder block came with it). With `mem` ({ blocks, slug } — the
+   scene's current blocks), Tab overrides are restored: see
+   applyTypedMemory. Without mem the parse is pure inference, exactly
+   as before. */
+function parseTypeText(text, s, mem) {
   var lines = String(text || '').split('\n');
-  var slug = '', blocks = [], prev = null, prevIsHeading = false, lastKind = null, seenFirst = false;
+  var slug = '', blocks = [], paraMap = [[]], paraIdx = 0, inPara = false, prev = null, prevIsHeading = false, lastKind = null, seenFirst = false;
   var known = knownNamesFor(s);
   function knownHas(name) { return known.indexOf(String(name || '').toUpperCase()) !== -1; }
   function learn(name) { var n = baseNameOf(String(name || '').toUpperCase()); if (n && known.indexOf(n) === -1) known.push(n); }
-  function push(t, x) { var b = { t: t, x: x }; blocks.push(b); prev = b; prevIsHeading = false; lastKind = t; return b; }
+  function push(t, x) { var b = { t: t, x: x }; blocks.push(b); paraMap[paraIdx].push(blocks.length - 1); prev = b; prevIsHeading = false; lastKind = t; return b; }
   lines.forEach(function (raw) {
     var line = raw.replace(/^\s+|\s+$/g, '');
     /* A blank line ends the current paragraph (prev) — lines stop
@@ -1401,7 +1421,12 @@ function parseTypeText(text, s) {
        blank line between EVERY block, so a dialogue paragraph still
        follows its character cue across one, and the round-trip
        (parse -> serialize -> parse) still gives the same blocks. */
-    if (!line) { prev = null; prevIsHeading = false; return; }
+    if (!line) {
+      prev = null; prevIsHeading = false;
+      if (inPara) { inPara = false; paraIdx++; if (!paraMap[paraIdx]) paraMap[paraIdx] = []; }
+      return;
+    }
+    if (!inPara) inPara = true;
     var isFirst = !seenFirst;
     seenFirst = true;
     /* First non-blank line: a heading or FADE IN becomes the
@@ -1492,7 +1517,247 @@ function parseTypeText(text, s) {
     if (lastKind === 'character' || lastKind === 'paren' || lastKind === 'dialogue') { push('dialogue', line); return; }
     push('action', line);
   });
-  return { slug: slug, blocks: blocks };
+  if (!paraMap[paraIdx]) paraMap[paraIdx] = [];
+  var out = { slug: slug, blocks: blocks, paraMap: paraMap };
+  /* Tab overrides: restore a Tabbed type from the scene's current
+     blocks (mem) while its paragraph's text is unchanged or only
+     appended to. Only typed blocks are ever restored. */
+  if (mem && mem.blocks) applyTypedMemory(out, text, mem, s);
+  return out;
+}
+/* Tab overrides ("typed" blocks): restore a paragraph's Tabbed type
+   when it is re-parsed. Only blocks with typed===true are ever
+   restored — inferred types are re-inferred every parse, exactly as
+   before. A typed block survives while its paragraph's text is
+   unchanged or only appended to (new text starts with old text); any
+   other edit clears the override and the type is re-inferred. An
+   empty typed block (Tab on an empty paragraph) remembers its
+   paragraph index in `para`, since empty text is a prefix of
+   everything — it only ever claims the new block at that same
+   paragraph. */
+function applyTypedMemory(parsed, text, mem, s) {
+  var blocks = parsed.blocks, paraMap = parsed.paraMap;
+  var prevBlocks = mem.blocks || [];
+  if (!prevBlocks.length) return;
+  var j = 0;
+  blocks.forEach(function (b, bi) {
+    var newPara = paraIndexOf(paraMap, bi);
+    var newX = (b.x || '').trim();
+    for (var k = j; k < prevBlocks.length; k++) {
+      var old = prevBlocks[k];
+      if (!old || old.typed !== true) continue;
+      var oldX = (old.x || '').trim();
+      var match = false;
+      if (oldX === '') match = (typeof old.para === 'number' && old.para === newPara);
+      else match = (newX === oldX || newX.indexOf(oldX) === 0);
+      if (match) { b.t = old.t; b.typed = true; j = k + 1; return; }
+    }
+  });
+  /* Empty paragraphs keep their Tabbed type while they stay empty, so
+     Tab, Tab on a fresh paragraph keeps cycling instead of resetting
+     to Action: an old empty typed block for that paragraph becomes an
+     empty block in the new list (serialize/print skip empty blocks,
+     so it is invisible until he types into it). */
+  var spans = typeParagraphSpans(text);
+  var empties = [];
+  for (var p = 0; p < paraMap.length; p++) {
+    if ((paraMap[p] || []).length) continue;
+    var span = spans[p];
+    if (!span || (text.slice(span.start, span.end).replace(/\s/g, '') !== '')) continue;
+    for (var k2 = 0; k2 < prevBlocks.length; k2++) {
+      var old2 = prevBlocks[k2];
+      if (old2 && old2.typed === true && (old2.x || '').trim() === '' && old2.para === p) {
+        empties.push({ p: p, t: old2.t });
+        break;
+      }
+    }
+  }
+  /* Insert from the last paragraph backwards, so earlier positions
+     never shift under us. */
+  empties.sort(function (a, b) { return b.p - a.p; });
+  empties.forEach(function (e) {
+    var at = 0;
+    for (var q = 0; q < e.p; q++) at += (paraMap[q] || []).length;
+    blocks.splice(at, 0, { t: e.t, x: '', typed: true, para: e.p });
+    paraMap[e.p] = [at];
+  });
+}
+function paraIndexOf(paraMap, bi) {
+  for (var p = 0; p < paraMap.length; p++) {
+    if ((paraMap[p] || []).indexOf(bi) !== -1) return p;
+  }
+  return -1;
+}
+/* Paragraphs of the Type textarea, counted the way the parser counts
+   them: runs of non-blank lines, plus one trailing empty paragraph
+   when the text ends with a blank line ("He runs\n\n" — the caret
+   sits in a fresh paragraph; "He runs\n" is still the same paragraph,
+   just a new line). A leading blank line starts nothing; two blank
+   lines in the middle count as one separator, same as the parser. */
+function typeParagraphSpans(text) {
+  var spans = [];
+  var lines = String(text || '').split('\n');
+  var off = 0, cur = null, idx = 0;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i], ls = off, le = off + line.length;
+    if (line.replace(/\s/g, '') === '') {
+      if (cur) { spans.push(cur); cur = null; idx++; }
+    } else {
+      if (!cur) cur = { index: idx, start: ls, end: le };
+      else cur.end = le;
+    }
+    off = le + 1;
+  }
+  if (cur) spans.push(cur);
+  if (lines.length >= 2 && lines[lines.length - 2].replace(/\s/g, '') === '' && lines[lines.length - 1] === '') {
+    spans.push({ index: idx, start: text.length, end: text.length, empty: true });
+  }
+  if (!spans.length) spans.push({ index: 0, start: 0, end: 0, empty: true });
+  return spans;
+}
+/* The paragraph the caret is in: the first span ending at or after
+   it, else the last span. A caret on a blank line belongs to the next
+   paragraph — that is the one he is about to type into. */
+function typeCaretParagraph(text, caret) {
+  var spans = typeParagraphSpans(text);
+  for (var i = 0; i < spans.length; i++) {
+    if (caret <= spans[i].end) return spans[i];
+  }
+  return spans[spans.length - 1];
+}
+/* The six Final Draft elements, in Tab order. A mid-scene heading is
+   an action block whose text reads like a heading — the parser makes
+   it one, and print lays it out as one — so "Scene Heading" is a
+   label over the action type, not a seventh block type. */
+var ELEMENT_CYCLE = ['Scene Heading', 'Action', 'Character', 'Dialogue', 'Paren', 'Transition'];
+function elementLabel(b, s) {
+  if (!b) return 'Action';
+  if (b.t === 'character') return 'Character';
+  if (b.t === 'dialogue') return 'Dialogue';
+  if (b.t === 'paren') return 'Paren';
+  if (b.t === 'transition') return 'Transition';
+  /* A heading the user has NOT Tabbed is a Scene Heading; once Tabbed,
+     the override IS the type, so it reads Action — otherwise Tab
+     could never move past a heading (the shape would keep calling it
+     a heading no matter what the override said). */
+  if (b.typed === true) return 'Action';
+  var known = knownNamesFor(s);
+  function kh(n) { return known.indexOf(String(n || '').toUpperCase()) !== -1; }
+  return splitHeading(b.x || '', kh) ? 'Scene Heading' : 'Action';
+}
+function typeForLabel(label) {
+  return (label === 'Character' ? 'character' :
+    label === 'Dialogue' ? 'dialogue' :
+    label === 'Paren' ? 'paren' :
+    label === 'Transition' ? 'transition' : 'action');
+}
+/* Rewrite a paragraph's text into the canonical shape of its new
+   element — and nothing else. Tab changes the TYPE (the override),
+   not his words: a cue is uppercased (it prints uppercased anyway),
+   a paren gets its brackets, a transition is uppercased, a heading
+   is normalised if it already reads like one. Tabbing AWAY never
+   lowercases anything back — that would eat proper nouns. Returns
+   { text, delta }: delta shifts the caret by the amount the
+   paragraph grew or shrank at its head. */
+function shapeParagraphFor(paraText, label, s) {
+  var lines = String(paraText || '').split('\n');
+  var first = lines[0] || '';
+  var delta = 0;
+  if (label === 'Character' || label === 'Transition') {
+    if (first) lines[0] = first.toUpperCase();
+  } else if (label === 'Paren') {
+    if (first && first.charAt(0) !== '(') { lines[0] = '(' + first + ')'; delta = 1; }
+  } else if (label === 'Scene Heading') {
+    var known = knownNamesFor(s);
+    function kh(n) { return known.indexOf(String(n || '').toUpperCase()) !== -1; }
+    var hd = first ? splitHeading(first, kh) : null;
+    if (hd) { lines[0] = hd.heading; delta = hd.heading.length - first.length; }
+  }
+  return { text: lines.join('\n'), delta: delta };
+}
+/* Tab / Shift+Tab in Type mode (and the on-screen ⇥ Element button):
+   cycle the caret paragraph's element through the Final Draft table.
+   The type is stored as a `typed` flag on the block — set only here,
+   never by inference — and parseTypeText's memory alignment restores
+   it on every re-parse while the paragraph's text is unchanged or
+   only appended to. Editing the paragraph anywhere else clears the
+   override and the type is re-inferred. */
+function cycleTypeElement(dir) {
+  var s = cur();
+  if (!s || draftMode(s) !== 'type') return false;
+  var ta = document.getElementById('type-text');
+  if (!ta) return false;
+  var sc = s.scenes[typeTextIdx];
+  if (!sc) return false;
+  parseTypeMode(); /* flush the text on screen into blocks first */
+  var value = ta.value;
+  var caret = (typeof ta.selectionStart === 'number') ? ta.selectionStart : value.length;
+  var span = typeCaretParagraph(value, caret);
+  var parsed = parseTypeText(value, s, { blocks: sc.blocks, slug: sc.slug });
+  var idxs = parsed.paraMap[span.index] || [];
+  var label;
+  if (idxs.length) label = elementLabel(parsed.blocks[idxs[0]], s);
+  else if (span.index === 0 && (parsed.slug || '').trim()) { updateTypeIndicator(); return false; } /* the slugline itself — a heading already, nothing to cycle */
+  else label = 'Action';
+  var next = ELEMENT_CYCLE[(ELEMENT_CYCLE.indexOf(label) + dir + ELEMENT_CYCLE.length) % ELEMENT_CYCLE.length];
+  /* Scene Heading and Action share the action block type, so landing
+     on Scene Heading can never show as a heading unless the text
+     already reads like one — and going BACKWARDS from Action it
+     would land on itself and stall. Skip the stop in that direction
+     (forward from Transition it is a real move: Transition -> Action),
+     so Tab and Shift+Tab stay exact inverses and never stall. */
+  if (dir < 0 && next === 'Scene Heading') next = 'Transition';
+  var shaped = shapeParagraphFor(value.slice(span.start, span.end), next, s);
+  var newValue = value.slice(0, span.start) + shaped.text + value.slice(span.end);
+  ta.value = newValue;
+  var rel = caret - span.start;
+  var newCaret = span.start + Math.max(0, Math.min(shaped.text.length, rel + shaped.delta));
+  /* Re-parse with the pre-Tab blocks as memory, then pin the type on
+     the paragraph's first block. */
+  var parsed2 = parseTypeText(newValue, s, { blocks: sc.blocks, slug: sc.slug });
+  var idxs2 = parsed2.paraMap[span.index] || [];
+  sc.slug = parsed2.slug;
+  sc.blocks = parsed2.blocks;
+  if (idxs2.length) {
+    var b = sc.blocks[idxs2[0]];
+    b.t = typeForLabel(next);
+    b.typed = true;
+  } else {
+    /* Empty paragraph: the parse produced no block for it — insert
+       the override directly, anchored to this paragraph index. */
+    var at = 0;
+    for (var q = 0; q < span.index; q++) at += (parsed2.paraMap[q] || []).length;
+    sc.blocks.splice(at, 0, { t: typeForLabel(next), x: '', typed: true, para: span.index });
+  }
+  sc.typeText = serializeScene(sc);
+  touchLocal(); save();
+  var chipsEl = document.getElementById('draft-chips');
+  if (chipsEl) chipsEl.innerHTML = draftChipsHtml(s, typeTextIdx);
+  updateDraftTotals();
+  ta.selectionStart = ta.selectionEnd = newCaret;
+  ta.focus();
+  updateTypeIndicator();
+  return true;
+}
+/* The current-element status line in the Type toolbar. In-memory
+   parse only — it never writes back, never re-renders, never saves
+   on caret movement. */
+function updateTypeIndicator() {
+  var el = document.getElementById('type-element-indicator');
+  var ta = document.getElementById('type-text');
+  if (!el || !ta) return;
+  var s = cur();
+  var sc = s && s.scenes[typeTextIdx];
+  if (!sc) { el.textContent = ''; return; }
+  var caret = (typeof ta.selectionStart === 'number') ? ta.selectionStart : ta.value.length;
+  var span = typeCaretParagraph(ta.value, caret);
+  var parsed = parseTypeText(ta.value, s, { blocks: sc.blocks, slug: sc.slug });
+  var idxs = parsed.paraMap[span.index] || [];
+  var label;
+  if (idxs.length) label = elementLabel(parsed.blocks[idxs[0]], s);
+  else if (span.index === 0 && (parsed.slug || '').trim()) label = 'Scene Heading';
+  else label = 'Action';
+  el.textContent = 'Element: ' + label + ' — Tab to change';
 }
 /* Blocks -> plain text: slugline first, then one block per paragraph,
    separated by a blank line. Round-trip (parse -> serialize -> parse)
@@ -1525,7 +1790,9 @@ function parseTypeMode() {
   var sc = s.scenes[typeTextIdx];
   if (!sc) return false;
   var beforeSlug = sc.slug, beforeBlocks = JSON.stringify(sc.blocks);
-  var parsed = parseTypeText(ta.value, s);
+  /* With memory: a Tabbed type survives the re-parse while its
+     paragraph's text is unchanged or only appended to. */
+  var parsed = parseTypeText(ta.value, s, { blocks: sc.blocks, slug: sc.slug });
   sc.slug = parsed.slug;
   sc.blocks = parsed.blocks;
   sc.typeText = serializeScene(sc);
@@ -2435,8 +2702,16 @@ function stepDraftType(s, idx, sc, def) {
   var hasWritten = sc.blocks.some(function (b) { return (b.x || '').trim(); });
   var notesHidden = (typeof s.pos.notesHidden === 'boolean') ? s.pos.notesHidden : hasWritten;
   var typeValue = (sc.typeText || '').trim() ? sc.typeText : serializeScene(sc);
+  /* The indicator's first reading: paragraph 0, where the caret lands
+     on a fresh render. */
+  var initParsed = parseTypeText(typeValue, s, { blocks: sc.blocks, slug: sc.slug });
+  var initIdxs = initParsed.paraMap[0] || [];
+  var initLabel = initIdxs.length ? elementLabel(initParsed.blocks[initIdxs[0]], s) :
+    ((initParsed.slug || '').trim() ? 'Scene Heading' : 'Action');
   var h = '<div class="card">' +
-    '<div class="btnrow"><button type="button" class="small" id="btn-toggle-notes">' + (notesHidden ? 'Show scene notes' : 'Hide scene notes') + '</button></div>' +
+    '<div class="btnrow"><button type="button" class="small" id="btn-toggle-notes">' + (notesHidden ? 'Show scene notes' : 'Hide scene notes') + '</button>' +
+    '<button type="button" class="small" id="btn-cycle-element" title="Change this paragraph’s element — same as Tab">⇥ Element</button>' +
+    '<span class="muted" id="type-element-indicator">Element: ' + initLabel + ' — Tab to change</span></div>' +
     sceneNotesHtml(s, idx, notesHidden) +
     '<label>Type the scene<span class="hint">Just type — no tapping, no picker. Enter is a new line.</span>' +
     '<textarea id="type-text" class="type-text" spellcheck="false" placeholder="INT. KITCHEN — NIGHT\n\nHe stirs the pot, listening.\n\nMARA\nWe have to leave tonight.">' + esc(typeValue) + '</textarea></label>' +
@@ -2697,7 +2972,7 @@ document.addEventListener('input', function (e) {
        and navigation, never while typing. */
     var sT = cur(), idxT = Math.min(sT.pos.draft || 0, sT.scenes.length - 1);
     var scT = sT.scenes[idxT];
-    if (scT) { scT.typeText = el.value; touchLocal(); save(); }
+    if (scT) { scT.typeText = el.value; touchLocal(); save(); updateTypeIndicator(); }
   }
   if (el.dataset.path) { setPath(cur(), el.dataset.path, el.value); touchLocal(); save(); }
   if (el.dataset.scene) handleSceneField(el, false);
@@ -2708,6 +2983,18 @@ document.addEventListener('input', function (e) {
    text becomes blocks, not a keystroke sooner. */
 document.addEventListener('focusout', function (e) {
   if (e.target && e.target.id === 'type-text') parseTypeMode();
+});
+/* The current-element indicator follows the caret: typing, arrow keys,
+   a tap, or focusing the textarea. In-memory parse only — nothing is
+   written back or saved by moving the caret. */
+document.addEventListener('keyup', function (e) {
+  if (e.target && e.target.id === 'type-text') updateTypeIndicator();
+});
+document.addEventListener('click', function (e) {
+  if (e.target && e.target.id === 'type-text') updateTypeIndicator();
+});
+document.addEventListener('focusin', function (e) {
+  if (e.target && e.target.id === 'type-text') updateTypeIndicator();
 });
 document.addEventListener('change', function (e) {
   var el = e.target;
@@ -2748,6 +3035,7 @@ document.addEventListener('click', function (e) {
   if (el.id === 'btn-goto-outline') { currentStep = outlineIdx(s); renderStep(); return; }
   if (el.id === 'btn-goto-draft') { currentStep = draftIdx(s); renderStep(); return; }
   if (el.id === 'btn-update') { handleUpdate(); return; }
+  if (el.id === 'btn-cycle-element') { cycleTypeElement(1); return; }
   if (el.id === 'btn-snapshots') {
     var snapPanel = document.getElementById('snapshots-panel');
     if (snapPanel) { snapPanel.hidden = !snapPanel.hidden; if (!snapPanel.hidden) renderSnapshots(); }
@@ -3017,6 +3305,15 @@ document.addEventListener('change', function (e) {
 });
 document.addEventListener('keydown', function (e) {
   if ((e.metaKey || e.ctrlKey) && e.key === 'p') { /* browser print; #print-view must already be built — use the buttons. */ }
+  /* Tab in Type mode: cycle the caret paragraph's element through the
+     Final Draft table. Shift+Tab goes backwards. The browser would
+     otherwise move focus out of the textarea. */
+  if (e.key === 'Tab' && e.target && e.target.id === 'type-text') {
+    e.preventDefault();
+    cycleTypeElement(e.shiftKey ? -1 : 1);
+    updateTypeIndicator();
+    return;
+  }
   /* Enter in a draft block: a new block right below it, type inferred
      from this one — a scene can be typed end to end without tapping
      the + buttons. Shift+Enter is left alone (newline in the block). */
