@@ -232,7 +232,7 @@ function blankScene() {
      overwrites the scene above it. purpose/stakes keep plot + characters
      moving so nobody gets dropped. */
   return { slug: '', happens: '', turn: '', purpose: '', stakes: '', revise: '',
-           pages: '', done: false, draft: '', blocks: [], tagChar: '', tagArc: '' };
+           pages: '', done: false, draft: '', blocks: [], tagChar: '', tagArc: '', typeText: '' };
 }
 function blankScript(n) {
   return {
@@ -311,7 +311,10 @@ function normalize(db) {
       char: oldPos.char || 0, draft: oldPos.draft || 0,
       /* notesHidden survives only as a real boolean; anything else
          means "never set" and the draft picks its own default. */
-      notesHidden: (typeof oldPos.notesHidden === 'boolean' ? oldPos.notesHidden : undefined) };
+      notesHidden: (typeof oldPos.notesHidden === 'boolean' ? oldPos.notesHidden : undefined),
+      /* Draft mode survives only as 'cards' or 'type'; anything else
+         means "never set" and the draft defaults to Cards. */
+      draftMode: (oldPos.draftMode === 'type' || oldPos.draftMode === 'cards') ? oldPos.draftMode : undefined };
     if (typeof s.updatedAt !== 'string') s.updatedAt = '';
     if (!s.story) s.story = {};
     if (typeof s.story.byline !== 'string') s.story.byline = 'Gabe Arredondo';
@@ -336,6 +339,19 @@ function normalize(db) {
       } else if (!sc.blocks.length && sc.draft && sc.draft.trim()) {
         /* Legacy plain-text draft with an empty blocks array — same move. */
         sc.blocks = [{ t: 'action', x: sc.draft }];
+      }
+      /* Type mode's raw text: if it differs from what the blocks say,
+         it was typed and never parsed (closed without a blur, or typed
+         on another device) — parse it once so the blocks always reflect
+         the latest typed text. syncTypeText() keeps the two in step
+         after every Cards-mode edit, so this only ever fires for
+         genuinely unparsed text. */
+      if (typeof sc.typeText !== 'string') sc.typeText = '';
+      if (sc.typeText && sc.typeText !== serializeScene(sc)) {
+        var tp = parseTypeText(sc.typeText);
+        sc.slug = tp.slug;
+        sc.blocks = tp.blocks;
+        sc.typeText = serializeScene(sc);
       }
     });
     if (!s.cleanup) s.cleanup = { read: false, beats: false, turns: false, hero: false, dialogue: false, pages: false, ending: false };
@@ -892,6 +908,7 @@ function recheckCloud() {
    copy stays safe, the session stays signed in, and the next open
    pushes it then. Never signs the user out. */
 function flushCloudPushOnClose() {
+  parseTypeMode(); /* typed-but-unparsed text goes up as blocks, not stale ones */
   if (!cloudUser || cloudBusy) return;
   /* Only flush a real edit — a navigation save alone must not push
      older local content over a newer cloud copy on the way out. */
@@ -920,6 +937,7 @@ function updateClock() {
   return new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 function handleUpdate() {
+  parseTypeMode(); /* typed-but-unparsed text counts as a real edit */
   var btn = document.getElementById('btn-update');
   if (updateRunning) return;
   /* A real unsynced edit is one that was already waiting before this
@@ -1103,6 +1121,121 @@ function estPages(t) { return wordCount(t) / WORDS_PER_PAGE; }
 function sceneText(sc) {
   if (sc.blocks && sc.blocks.length) return sc.blocks.map(function (b) { return b.x || ''; }).join('\n\n');
   return sc.draft || '';
+}
+
+/* ---------------- Type mode: free typing over the same blocks ------
+   Cards mode is the picker; Type mode is one big textarea for the
+   whole scene, Final Draft style. The blocks model stays the single
+   source of truth for print, outline, sync and autosave — Type mode
+   is a view over it: plain text in, blocks out, and back again.
+   Which scene the textarea on screen belongs to (typeTextIdx): every
+   navigation handler changes s.pos.draft before renderStep() rebuilds,
+   so parsing "the current scene" would parse the typed text into the
+   WRONG scene. The rendered scene index is the truth instead. */
+var typeTextIdx = 0;
+function draftMode(s) { return s.pos && s.pos.draftMode === 'type' ? 'type' : 'cards'; }
+/* Plain text -> { slug, blocks }. Blank line = block boundary.
+   Consecutive same-kind lines merge into one block (joined with \n).
+   Rules, in order: first non-blank line that looks like a heading
+   becomes the slugline; CONT'D / (MORE) after a cue joins the
+   dialogue; transitions; a mid-scene INT./EXT. line is action, not a
+   character cue; a line starting with "(" is a paren; an ALL-CAPS
+   line (≤ 40 chars, at least one letter) is a character cue; after a
+   character cue or a paren comes dialogue, otherwise action. */
+function parseTypeText(text) {
+  var lines = String(text || '').split('\n');
+  var slug = '', blocks = [], prev = null, lastKind = null, seenFirst = false;
+  function push(t, x) { var b = { t: t, x: x }; blocks.push(b); prev = b; lastKind = t; return b; }
+  lines.forEach(function (raw) {
+    var line = raw.replace(/^\s+|\s+$/g, '');
+    /* A blank line ends the current paragraph (prev) — lines stop
+       merging — but lastKind survives it: the serialization puts a
+       blank line between EVERY block, so a dialogue paragraph still
+       follows its character cue across one, and the round-trip
+       (parse -> serialize -> parse) still gives the same blocks. */
+    if (!line) { prev = null; return; }
+    if (!seenFirst) {
+      seenFirst = true;
+      if (/^(INT\.|EXT\.|INT\/EXT\.|FADE IN)/i.test(line)) { slug = line; return; }
+    }
+    /* (CONT'D) / (MORE) right after a cue belongs to that dialogue —
+       in print they are written with parens, and bare CONT'D shows
+       up in typed drafts too. */
+    if (/^(CONT'D|\(CONT'D\)|\(MORE\))$/i.test(line) && (lastKind === 'character' || lastKind === 'dialogue')) {
+      if (prev && prev.t === 'dialogue') prev.x += '\n' + line;
+      else push('dialogue', line);
+      return;
+    }
+    if (/^(FADE IN|FADE OUT|CUT TO|DISSOLVE TO|SMASH CUT|MATCH CUT|TIME CUT|JUMP CUT|INTERCUT|MONTAGE)\b.*$/i.test(line) ||
+        /^END\.?\s*$/i.test(line)) { push('transition', line.toUpperCase()); return; }
+    /* A location line later in the scene is a new slugline in the
+       story, not a person — keep it out of the character cues. */
+    if (/^(INT\.|EXT\.|INT\/EXT\.)/i.test(line)) {
+      if (prev && prev.t === 'action') prev.x += '\n' + line.toUpperCase();
+      else push('action', line.toUpperCase());
+      return;
+    }
+    if (line.charAt(0) === '(') { push('paren', line); return; }
+    if (line.length <= 40 && /[A-Z]/.test(line) && !/[a-z]/.test(line)) { push('character', line.toUpperCase()); return; }
+    /* Dialogue vs action: inside one paragraph, lines merge into the
+       block they follow; across a blank line, a new paragraph after
+       a cue (or after dialogue) is still dialogue, anything else is
+       action — and it starts a NEW block, it never merges across
+       the blank line. */
+    if (prev && prev.t === 'dialogue') { prev.x += '\n' + line; return; }
+    if (prev && (prev.t === 'character' || prev.t === 'paren')) { push('dialogue', line); return; }
+    if (prev && prev.t === 'action') { prev.x += '\n' + line; return; }
+    if (lastKind === 'character' || lastKind === 'paren' || lastKind === 'dialogue') { push('dialogue', line); return; }
+    push('action', line);
+  });
+  return { slug: slug, blocks: blocks };
+}
+/* Blocks -> plain text: slugline first, then one block per paragraph,
+   separated by a blank line. Round-trip (parse -> serialize -> parse)
+   gives the same blocks, modulo the uppercasing rules above. */
+function serializeScene(sc) {
+  var parts = [];
+  var slug = (sc.slug || '').trim();
+  if (slug) parts.push(slug);
+  (sc.blocks || []).forEach(function (b) {
+    var x = (b.x || '').trim();
+    if (!x) return;
+    if (b.t === 'character' || b.t === 'transition') x = x.toUpperCase();
+    parts.push(x);
+  });
+  return parts.join('\n\n');
+}
+/* After any Cards-mode edit, the typed text must match the blocks
+   again — otherwise normalize() would re-parse stale text over the
+   edit on the next load. Cheap: one scene's blocks. */
+function syncTypeText(sc) { if (sc) sc.typeText = serializeScene(sc); }
+/* Parse the Type textarea on screen into its scene (see typeTextIdx).
+   No-op anywhere but the Draft step in Type mode, and never while
+   typing — callers are blur, navigation, Update, print and close. */
+function parseTypeMode() {
+  var s = cur();
+  if (!s || !wizardSteps(s)[currentStep] || wizardSteps(s)[currentStep].id !== 'draft') return false;
+  if (draftMode(s) !== 'type') return false;
+  var ta = document.getElementById('type-text');
+  if (!ta) return false;
+  var sc = s.scenes[typeTextIdx];
+  if (!sc) return false;
+  var beforeSlug = sc.slug, beforeBlocks = JSON.stringify(sc.blocks);
+  var parsed = parseTypeText(ta.value);
+  sc.slug = parsed.slug;
+  sc.blocks = parsed.blocks;
+  sc.typeText = serializeScene(sc);
+  /* Only stamp this as a real edit when the parse actually changed
+     something: an unconditional touchLocal() here would make
+     handleUpdate() think a no-change tap was an unsynced edit and
+     push local over a newer cloud copy before comparing. */
+  if (sc.slug !== beforeSlug || JSON.stringify(sc.blocks) !== beforeBlocks) {
+    touchLocal(); save();
+    var chipsEl = document.getElementById('draft-chips');
+    if (chipsEl) chipsEl.innerHTML = draftChipsHtml(s, typeTextIdx);
+    updateDraftTotals();
+  }
+  return true;
 }
 
 /* ---------------- acts model ----------------
@@ -1346,6 +1479,9 @@ function openScript(id) {
 }
 
 function growTextarea(el) {
+  /* The Type textarea sizes itself from CSS (min-height 60vh, user
+     drag) — auto-height here would cap it at 360px and fight it. */
+  if (el.classList && el.classList.contains('type-text')) return;
   el.style.height = 'auto';
   el.style.height = Math.min(360, el.scrollHeight) + 'px';
 }
@@ -1360,6 +1496,12 @@ function pagerHtml(key, idx, label) {
 
 /* ---------------- wizard ---------------- */
 function renderStep() {
+  /* Leaving the Draft step (or the scene) in Type mode parses what
+     was just typed into blocks first — the textarea is about to be
+     rebuilt, and parseTypeMode() knows which scene it belongs to
+     (typeTextIdx), so navigation handlers that already moved
+     s.pos.draft cannot mis-attribute the text. */
+  parseTypeMode();
   /* Leaving the step ends the delete-undo window (see refreshDraft). */
   lastDeletedBlock = null;
   var s = cur(), steps = wizardSteps(s);
@@ -1806,6 +1948,7 @@ function insertBlock(idx, bi) {
   if (!sc) return;
   var type = sc.blocks[bi] ? nextBlockTypeAfter(sc.blocks[bi].t) : 'action';
   sc.blocks.splice(bi + 1, 0, { t: type, x: '' });
+  syncTypeText(sc);
   touchLocal(); save();
   refreshDraft(bi + 1);
 }
@@ -1814,6 +1957,7 @@ function moveBlock(idx, bi, dir) {
   var s = cur(), blocks = s.scenes[idx].blocks, j = bi + dir;
   if (j < 0 || j >= blocks.length) return;
   var tmp = blocks[bi]; blocks[bi] = blocks[j]; blocks[j] = tmp;
+  syncTypeText(s.scenes[idx]);
   touchLocal(); save();
   refreshDraft(j);
 }
@@ -1886,6 +2030,10 @@ function updateUndoBar() {
    the slugline input and notes panel are never touched, and the
    target textarea is focused again afterwards. */
 function refreshDraft(focusBi, keepUndo) {
+  /* Type mode has no #blocks to rebuild — the textarea IS the editor.
+     Parse once (in case this was reached without a blur) and leave
+     the textarea and its caret alone. */
+  if (draftMode(cur()) === 'type') { parseTypeMode(); return; }
   if (!keepUndo) lastDeletedBlock = null;
   var s = cur(), idx = Math.min(s.pos.draft || 0, s.scenes.length - 1);
   var blocksEl = document.getElementById('blocks');
@@ -1913,12 +2061,21 @@ function refreshDraft(focusBi, keepUndo) {
 function stepDraft(s) {
   var idx = Math.min(s.pos.draft || 0, s.scenes.length - 1);
   var sc = s.scenes[idx], def = sceneDefFor(s, idx), dp = draftStats(), tp = targetPages(s);
-  if (!sc.blocks.length) { sc.blocks.push({ t: 'action', x: '' }); touchLocal(); save(); }
+  var mode = draftMode(s);
+  /* Cards mode needs one block to show; Type mode starts from an
+     empty textarea, so no phantom block is ever added there. */
+  if (mode === 'cards' && !sc.blocks.length) { sc.blocks.push({ t: 'action', x: '' }); touchLocal(); save(); syncTypeText(sc); }
   var h = '<div class="card"><h2>Writing — Scene ' + def.n + ' of ' + s.scenes.length + '</h2>' +
     '<p class="sub">' + esc(def.beat) + ' · ~' + def.pages + ' pages planned for this scene</p>' +
     '<p class="stat"><b>' + Math.round(dp.pages) + '</b> pages drafted · <b>' + dp.words.toLocaleString() + '</b> words · target ' + tp + ' pages</p>' +
     '<div class="progress"><div style="width:' + Math.min(100, Math.round(100 * dp.pages / tp)) + '%"></div></div>' +
     '<p class="muted">Scene headings are in caps. Character names centered, dialogue underneath — same as a real script.</p>' +
+    '<div class="seg" role="group" aria-label="Draft mode">' +
+    '<button type="button" data-draftmode="cards"' + (mode === 'cards' ? ' class="on" aria-pressed="true"' : '') + '>Cards</button>' +
+    '<button type="button" data-draftmode="type"' + (mode === 'type' ? ' class="on" aria-pressed="true"' : '') + '>Type</button></div>' +
+    '<p class="muted">' + (mode === 'type'
+      ? 'Type mode — just type the scene like a script. It sorts itself into blocks when you leave the page.'
+      : 'Cards mode — one block at a time, with the picker. Switch to Type to just write.') + '</p>' +
     mckeeDetails('A scene is a turning point', 'A scene that doesn’t change a value — love/hate, trust/distrust, life/death — is a scene to cut.') +
     mckeeDetails('Crisis, then climax', 'Crisis is the hardest choice; climax is the action taken. Don’t skip the choice to get to the action.') +
     '<div class="btnrow"><button type="button" data-print="draft-all">🖨 Print / Save script as PDF</button>' +
@@ -1927,6 +2084,7 @@ function stepDraft(s) {
   var chipsHtml = draftChipsHtml(s, idx);
   h += '<div id="draft-chips">' + chipsHtml + '</div>';
   h += pagerHtml('draft', idx, 'Card');
+  if (mode === 'type') return h + stepDraftType(s, idx, sc, def);
   var slug = (sc.slug || '').trim();
   /* Notes start collapsed once this scene has written blocks, open on
      a fresh scene; an explicit toggle (s.pos.notesHidden) always wins. */
@@ -1947,6 +2105,34 @@ function stepDraft(s) {
     '<button type="button" class="small" data-addblock="dialogue" data-idx="' + idx + '">+ Dialogue</button>' +
     '<button type="button" class="small" data-addblock="paren" data-idx="' + idx + '">+ (aside)</button>' +
     '<button type="button" class="small" data-addblock="transition" data-idx="' + idx + '">+ Transition</button></div>' +
+    '<div class="btnrow"><button type="button" class="small" data-prevscene' + (idx === 0 ? ' disabled' : '') + '>← Prev Scene</button>' +
+    (idx < s.scenes.length - 1
+      ? '<button type="button" class="primary" data-nextscene>Next Scene →</button>' +
+        '<button type="button" class="small ghost" data-act="goto-outline">Done — see the outline</button>'
+      : '<button type="button" class="primary" data-act="goto-outline">Done — see the outline</button>') +
+    '</div></div></div>';
+  return h;
+}
+/* Type mode: the whole scene in one Courier textarea — no picker, no
+   per-block taps. The slugline input lives in the text itself (first
+   line), so it is not shown separately here; the notes panel stays,
+   and so do the chips, pager and scene navigation. The textarea
+   value is the latest typed text when it exists, otherwise the
+   serialization of the blocks — so switching modes never loses a
+   word, and parseTypeMode() (blur / navigation / print / close)
+   turns it back into blocks. */
+function stepDraftType(s, idx, sc, def) {
+  typeTextIdx = idx;
+  var hasWritten = sc.blocks.some(function (b) { return (b.x || '').trim(); });
+  var notesHidden = (typeof s.pos.notesHidden === 'boolean') ? s.pos.notesHidden : hasWritten;
+  var typeValue = (sc.typeText || '').trim() ? sc.typeText : serializeScene(sc);
+  var h = '<div class="card">' +
+    '<div class="btnrow"><button type="button" class="small" id="btn-toggle-notes">' + (notesHidden ? 'Show scene notes' : 'Hide scene notes') + '</button></div>' +
+    sceneNotesHtml(s, idx, notesHidden) +
+    '<label>Type the scene<span class="hint">Just type — no tapping, no picker. Enter is a new line.</span>' +
+    '<textarea id="type-text" class="type-text" spellcheck="false" placeholder="INT. KITCHEN — NIGHT\n\nHe stirs the pot, listening.\n\nMARA\nWe have to leave tonight.">' + esc(typeValue) + '</textarea></label>' +
+    '<p class="muted">Type like a script — INT./EXT. for the heading, a name in CAPS for who speaks, then their lines. It sorts itself into blocks when you leave the page.</p>' +
+    '<div class="draft-sticky">' +
     '<div class="btnrow"><button type="button" class="small" data-prevscene' + (idx === 0 ? ' disabled' : '') + '>← Prev Scene</button>' +
     (idx < s.scenes.length - 1
       ? '<button type="button" class="primary" data-nextscene>Next Scene →</button>' +
@@ -2112,11 +2298,13 @@ function buildPrint(actKey) {
   pv.innerHTML = h;
 }
 function doPrint(kind, actKey) {
+  parseTypeMode(); /* a half-typed Type scene still prints in full */
   if (kind === 'draft') buildScriptPrint();
   else buildPrint(actKey);
   window.print();
 }
 function doPreview(kind) {
+  parseTypeMode(); /* a half-typed Type scene still previews in full */
   if (kind === 'draft') buildScriptPrint();
   else buildPrint(null);
   document.body.classList.add('show-print');
@@ -2164,6 +2352,10 @@ function handleSceneField(el, rerender) {
   var s = cur(), idx = parseInt(el.dataset.scene, 10), f = el.dataset.field;
   if (el.type === 'checkbox') s.scenes[idx][f] = el.checked;
   else s.scenes[idx][f] = el.value;
+  /* The slugline is the first line of the Type serialization — keep
+     the typed text in step after an edit here, or normalize() would
+     re-parse stale text over it on the next load. */
+  if (f === 'slug') syncTypeText(s.scenes[idx]);
   touchLocal();
   save();
   /* Re-render only on blur/change — re-rendering on every keystroke
@@ -2182,16 +2374,31 @@ function handleBlockField(el) {
     el.value = v;
   }
   if (b) b.x = v;
+  if (b) syncTypeText(cur().scenes[idx]);
   touchLocal();
   save();
   updateDraftTotals();
 }
 document.addEventListener('input', function (e) {
   var el = e.target;
+  if (el.id === 'type-text') {
+    /* Type mode: save the raw text on every keystroke, exactly like
+       Cards mode autosaves — but NEVER re-render here, or the caret
+       drops out from under him mid-word. Parsing happens on blur
+       and navigation, never while typing. */
+    var sT = cur(), idxT = Math.min(sT.pos.draft || 0, sT.scenes.length - 1);
+    var scT = sT.scenes[idxT];
+    if (scT) { scT.typeText = el.value; touchLocal(); save(); }
+  }
   if (el.dataset.path) { setPath(cur(), el.dataset.path, el.value); touchLocal(); save(); }
   if (el.dataset.scene) handleSceneField(el, false);
   if (el.dataset.block) handleBlockField(el);
   if (el.tagName === 'TEXTAREA') growTextarea(el);
+});
+/* Leaving the Type textarea parses it into blocks — the moment the
+   text becomes blocks, not a keystroke sooner. */
+document.addEventListener('focusout', function (e) {
+  if (e.target && e.target.id === 'type-text') parseTypeMode();
 });
 document.addEventListener('change', function (e) {
   var el = e.target;
@@ -2210,7 +2417,7 @@ document.addEventListener('click', function (e) {
   if (!el) return;
   var s = cur();
   if (el.dataset.open) { openScript(parseInt(el.dataset.open, 10)); return; }
-  if (el.id === 'btn-back-list') { save(); renderList(); recheckCloud(); return; }
+  if (el.id === 'btn-back-list') { parseTypeMode(); save(); renderList(); recheckCloud(); return; }
   if (el.id === 'btn-prev') {
     /* On the Draft step the bottom bar walks scenes (fix 10); the
        wizard step changes only everywhere else. */
@@ -2264,6 +2471,14 @@ document.addEventListener('click', function (e) {
     if (firstEmpty >= 0) { s.pos.draft = firstEmpty; save(); renderStep(); }
     return;
   }
+  if (el.dataset.draftmode) {
+    /* Parse what was typed before switching modes, so nothing is
+       lost in the jump either way — then switch and re-render. */
+    parseTypeMode();
+    var dm = el.dataset.draftmode;
+    if (dm === 'cards' || dm === 'type') { s.pos.draftMode = dm; touchLocal(); save(); renderStep(); }
+    return;
+  }
   if (el.id === 'btn-toggle-notes') {
     /* Persisted in s.pos.notesHidden: the next re-render shows the
        same state, instead of the panel coming back on every tap. */
@@ -2287,6 +2502,7 @@ document.addEventListener('click', function (e) {
   if (el.dataset.addblock) {
     var idx = parseInt(el.dataset.idx, 10);
     s.scenes[idx].blocks.push({ t: el.dataset.addblock, x: '' });
+    syncTypeText(s.scenes[idx]);
     touchLocal();
     save();
     refreshDraft(s.scenes[idx].blocks.length - 1);
@@ -2308,6 +2524,7 @@ document.addEventListener('click', function (e) {
     if (u && s.scenes[u.idx]) {
       var at = Math.min(u.bi, s.scenes[u.idx].blocks.length);
       s.scenes[u.idx].blocks.splice(at, 0, u.block);
+      syncTypeText(s.scenes[u.idx]);
       touchLocal(); save();
       refreshDraft(at);
     } else { updateUndoBar(); }
@@ -2319,6 +2536,7 @@ document.addEventListener('click', function (e) {
        bar, so a stray tap costs one tap to fix, not a retype. */
     var removed = s.scenes[ci].blocks.splice(cj, 1)[0];
     if (removed) lastDeletedBlock = { idx: ci, bi: cj, block: removed };
+    syncTypeText(s.scenes[ci]);
     touchLocal();
     save();
     refreshDraft(Math.min(cj, s.scenes[ci].blocks.length - 1), true);
