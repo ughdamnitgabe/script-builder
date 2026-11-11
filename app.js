@@ -29,6 +29,141 @@ var FORMATS = {
   streaming: { label: 'Streaming / Netflix', actsDefault: 1, teaser: false }
 };
 
+/* Methods — how to build the story, picked per script. The picker lives
+   on the Story step; it only changes the Beats step. McKee is NOT a
+   method (he has no beat sheet) — his principles ride along as short
+   teaching cards on Story, Characters, and Draft, for every method.
+   Page targets are Snyder's / Field's 110-page numbers; they are scaled
+   to this script's targetPages (see scaledPage). Teaching notes are
+   Juno's 1–2 line summaries, not book text. Sources: Snyder, Save the
+   Cat! (2005); Field, Screenplay (1979); Truby, The Anatomy of Story
+   (2007); Vogler, The Writer's Journey (1992); McKee, Story (1997). */
+var METHODS = [
+  { id: 'gabe', label: "Gabe's Template", book: 'Your starter template',
+    blurb: 'Cold open → setup → big turn at midpoint → short outro.',
+    unit: 'Beats', steps: [
+    { key: 'cold', label: 'Cold Open', hint: 'What hooks us in the first page? What do we see first? The title card lands here.' },
+    { key: 'inciting', label: 'Inciting Incident', hint: 'What wrecks the normal world and forces the hero to act? (Around scene 7.)' },
+    { key: 'pp1', label: 'Plot Point 1 — into Act 2', hint: 'The decision they can’t take back. The door locks.' },
+    { key: 'midpoint', label: 'Midpoint — the big turn / scare', hint: 'The biggest turn or scare, right in the middle. False win or false loss — the plan flips.' },
+    { key: 'allIsLost', label: 'All Is Lost', hint: 'The lowest point. The flaw costs them everything.' },
+    { key: 'climax', label: 'Climax + Outro', hint: 'The final showdown, then a short outro. The last image should answer the opening.' }
+  ] },
+  { id: 'save-the-cat', label: 'Save the Cat', book: 'Blake Snyder, Save the Cat! (2005)',
+    blurb: '15 beats, each with a page target. Proportions, not law — a beat a few pages off is fine.',
+    unit: 'Beats', steps: [
+    { key: 'stc-opening', label: 'Opening Image', hint: 'A snapshot of the hero’s life before anything changes. The final image will mirror it.', page: 1 },
+    { key: 'stc-theme', label: 'Theme Stated', hint: 'Someone says what the movie is really about — usually around page 5. The hero isn’t ready to hear it yet.', page: 5 },
+    { key: 'stc-setup', label: 'Set-Up', hint: 'The hero’s world, and everything in it that needs fixing. Show the flaw in action.', range: [1, 10] },
+    { key: 'stc-catalyst', label: 'Catalyst', hint: 'The event that knocks the old life over. Life can’t go back to how it was.', page: 12 },
+    { key: 'stc-debate', label: 'Debate', hint: 'The hero hesitates — should I go? Can I? The question has to feel real, not a stall.', range: [12, 25] },
+    { key: 'stc-break2', label: 'Break into Two', hint: 'The hero chooses to act and steps into the new world. Act 2 starts here.', page: 25 },
+    { key: 'stc-bstory', label: 'B Story', hint: 'A new relationship that carries the theme. It teaches the hero what the A story can’t.', page: 30 },
+    { key: 'stc-fun', label: 'Fun and Games', hint: 'The promise of the premise — the fun of the new world. This is the trailer part.', range: [30, 55] },
+    { key: 'stc-midpoint', label: 'Midpoint', hint: 'A false victory or a false defeat. Either way, the stakes go up from here.', page: 55 },
+    { key: 'stc-badguys', label: 'Bad Guys Close In', hint: 'Pressure tightens from outside and from within. The hero’s own team starts to crack.', range: [55, 75] },
+    { key: 'stc-allislost', label: 'All Is Lost', hint: 'The worst moment. Something or someone dies — the old plan, the old self, or a person.', page: 75 },
+    { key: 'stc-darknight', label: 'Dark Night of the Soul', hint: 'The hero sits in the loss before finding the answer. No fixing it yet — just the cost.', range: [75, 85] },
+    { key: 'stc-break3', label: 'Break into Three', hint: 'The A story and the B story fuse into one solution. The theme becomes the plan.', page: 85 },
+    { key: 'stc-finale', label: 'Finale', hint: 'The hero applies what they learned and proves they’ve changed. Show it, don’t say it.', range: [85, 110] },
+    { key: 'stc-final', label: 'Final Image', hint: 'The opening image, transformed. Proof of change in one picture.', page: 110 }
+  ] },
+  { id: 'field', label: 'Syd Field', book: 'Syd Field, Screenplay (1979)',
+    blurb: 'Three acts, 25/50/25. Plot points are turns, not scenes — a scene can carry one.',
+    unit: 'Cards', steps: [
+    { key: 'field-setup', label: 'Set-Up', hint: 'Hero, world, what they want, what’s in the way. Act 1.', range: [1, 25] },
+    { key: 'field-pp1', label: 'Plot Point 1', hint: 'The incident that spins the story into Act 2. The door locks behind the hero.', page: 25 },
+    { key: 'field-pinch1', label: 'Pinch Point 1', hint: 'A reminder of the opposing force. Pressure, not a full turn.', page: 37 },
+    { key: 'field-midpoint', label: 'Midpoint', hint: 'The stakes raiser — false win or false loss, halfway through.', page: 55 },
+    { key: 'field-pinch2', label: 'Pinch Point 2', hint: 'The second squeeze. The plan is failing and the flaw is showing.', page: 62 },
+    { key: 'field-pp2', label: 'Plot Point 2', hint: 'The incident that spins the story into Act 3. The hero goes proactive.', page: 75 },
+    { key: 'field-resolution', label: 'Resolution / Climax', hint: 'Did they succeed or fail? The solution, not just an ending.', range: [75, 110] }
+  ] },
+  { id: 'truby', label: 'Truby', book: 'John Truby, The Anatomy of Story (2007)',
+    blurb: '22 steps, built from character. The 7 key steps are the spine; the rest is the full checklist.',
+    unit: 'Steps', steps: [
+    { key: 'truby-selfrev1', label: 'Self-revelation, need, and desire', hint: 'What will the hero learn by the end — and what are they wrong about at the start?' },
+    { key: 'truby-ghost', label: 'Ghost and story world', hint: 'The past event that still haunts the hero. Show the world it made.' },
+    { key: 'truby-weakness', label: 'Weakness and need', hint: 'The psychological and moral flaw. The need is what the story fixes.', keyStep: true },
+    { key: 'truby-inciting', label: 'Inciting event', hint: 'The outside event that gives the hero a goal and forces action.' },
+    { key: 'truby-desire', label: 'Desire', hint: 'What the hero wants, starting small and growing. The engine of the plot.', keyStep: true },
+    { key: 'truby-ally', label: 'Ally or allies', hint: 'Helpers with their own goals — never more interesting than the hero.' },
+    { key: 'truby-opponent', label: 'Opponent and/or mystery', hint: 'The person best able to attack the hero’s weakness. Not just the strongest villain.', keyStep: true },
+    { key: 'truby-fakeally', label: 'Fake-ally opponent', hint: 'Seems like a friend, works against the hero — or turns into a true ally.' },
+    { key: 'truby-rev1', label: 'First revelation and decision', hint: 'New information changes what the hero wants and why. Changed desire and motive.' },
+    { key: 'truby-plan', label: 'Plan', hint: 'The hero’s strategy to beat the opponent. A plan that will fail is still a plan.', keyStep: true },
+    { key: 'truby-oppplan', label: 'Opponent’s plan and counterattack', hint: 'The opponent fights back with their own plan. The story is two plans colliding.' },
+    { key: 'truby-drive', label: 'Drive', hint: 'The long middle: the hero acts on the plan, step by step, toward apparent defeat.' },
+    { key: 'truby-allyattack', label: 'Attack by ally', hint: 'The hero starts doing immoral things to win — and an ally calls it out.' },
+    { key: 'truby-defeat', label: 'Apparent defeat', hint: 'About two-thirds in: the hero loses, badly. The plan is dead.' },
+    { key: 'truby-rev2', label: 'Second revelation and decision', hint: 'Just after the defeat, a new revelation. Obsessive drive, changed desire and motive.' },
+    { key: 'truby-audrev', label: 'Audience revelation', hint: 'The audience learns something the hero doesn’t yet — like who the fake ally is.' },
+    { key: 'truby-rev3', label: 'Third revelation and decision', hint: 'The last big reveal, often unmasking the fake ally to the hero.' },
+    { key: 'truby-gate', label: 'Gate, gauntlet, visit to death', hint: 'The conflict becomes unbearable. The hero passes through a gauntlet, inside or out.' },
+    { key: 'truby-battle', label: 'Battle', hint: 'Who wins is decided by which values win, not by who hits hardest.', keyStep: true },
+    { key: 'truby-selfrev2', label: 'Self-revelation', hint: 'The battle changes the hero. Face the truth about yourself or be destroyed.', keyStep: true },
+    { key: 'truby-moral', label: 'Moral decision', hint: 'Choose between two courses of action, each with a real cost. This is the theme, acted out.' },
+    { key: 'truby-equilibrium', label: 'New equilibrium', hint: 'The world after the choice — better, worse, or just different. The story’s last word.', keyStep: true }
+  ] },
+  { id: 'vogler', label: 'Vogler', book: 'Christopher Vogler, The Writer’s Journey (1992)',
+    blurb: 'The Hero’s Journey in 12 stages. Best for one clear hero on a transformation arc — poor fit for ensemble; if that’s your script, use Truby instead.',
+    unit: 'Stages', groups: [
+      { title: 'Departure — Act 1', from: 0, to: 4 },
+      { title: 'Initiation — Act 2', from: 5, to: 8 },
+      { title: 'Return — Act 3', from: 9, to: 11 }
+    ], steps: [
+    { key: 'vog-ordinary', label: 'Ordinary World', hint: 'The hero’s normal life, with a stress pulling two ways. Show it, don’t explain it.' },
+    { key: 'vog-call', label: 'Call to Adventure', hint: 'Something shakes the situation up. The beginnings of change.' },
+    { key: 'vog-refusal', label: 'Refusal of the Call', hint: 'Fear of the unknown. The hero turns away — or someone else voices the danger.' },
+    { key: 'vog-mentor', label: 'Meeting the Mentor', hint: 'Someone who has been there gives the hero what they need to go on.' },
+    { key: 'vog-threshold', label: 'Crossing the First Threshold', hint: 'The hero commits and enters the new world. End of Act 1.' },
+    { key: 'vog-tests', label: 'Tests, Allies, Enemies', hint: 'The new world’s rules, learned by trial. Friends and foes sorted out.' },
+    { key: 'vog-approach', label: 'Approach to the Inmost Cave', hint: 'Getting ready for the central ordeal. The danger is close now.' },
+    { key: 'vog-ordeal', label: 'Ordeal', hint: 'The midpoint crisis. The hero faces death — literal or of the old self — and survives.' },
+    { key: 'vog-reward', label: 'Reward (Seizing the Sword)', hint: 'What the ordeal earned. A prize, a truth, or a person to bring back.' },
+    { key: 'vog-roadback', label: 'The Road Back', hint: 'About three-quarters in: driven to finish and bring the treasure home.' },
+    { key: 'vog-resurrection', label: 'Resurrection', hint: 'The last test, on the threshold of home. Death and rebirth, on a higher level.' },
+    { key: 'vog-elixir', label: 'Return with the Elixir', hint: 'Home again, changed — carrying something that transforms the ordinary world.' }
+  ] }
+];
+function methodDef(id) {
+  for (var i = 0; i < METHODS.length; i++) if (METHODS[i].id === id) return METHODS[i];
+  return METHODS[0];
+}
+function methodDefFor(s) { return methodDef(s && s.method); }
+/* Gabe's 6 beats live in s.beats; every other method's steps live in
+   s.methodBeats, so switching method never overwrites the other one's
+   text. */
+function methodBeatPath(step, md) {
+  return (md && md.id === 'gabe' ? 'beats.' : 'methodBeats.') + step.key;
+}
+function methodBeatValue(s, step, md) {
+  if (!s) return '';
+  if (md && md.id === 'gabe') return (s.beats && s.beats[step.key]) || '';
+  return (s.methodBeats && s.methodBeats[step.key]) || '';
+}
+/* Scale a 110-page target to this script's length. Never hardcode 110. */
+function scaledPage(s, p) {
+  return Math.max(1, Math.round(p * targetPages(s) / 110));
+}
+function methodPageTag(s, step) {
+  var tp = targetPages(s);
+  if (step.page) return '~p' + scaledPage(s, step.page) + ' of ' + tp + ' (' + Math.round(100 * step.page / 110) + '%)';
+  if (step.range) return '~pp' + scaledPage(s, step.range[0]) + '–' + scaledPage(s, step.range[1]) + ' of ' + tp;
+  return '';
+}
+function setMethod(s, id) {
+  var md = methodDef(id);
+  if (!md || md.id === s.method) return;
+  touchLocal();
+  s.method = md.id;
+}
+/* McKee, Story (1997) — principles, not a beat sheet. Short collapsible
+   cards that ride along with any method; they never block typing. */
+function mckeeDetails(title, body) {
+  return '<details class="mckee"><summary>McKee — ' + esc(title) + '</summary><p class="muted">' + esc(body) + '</p></details>';
+}
+
 /* Act plans: title + "this is where we need X" prompt + suggested scene count.
    Totals all add to 42 scenes (~85 pages). Counts are suggestions — editable. */
 var ACT_PLANS = {
@@ -103,11 +238,13 @@ function blankScript(n) {
   return {
     id: n, title: 'Untitled ' + n, genre: '',
     format: 'feature', tvLength: '60', acts: 3, actCounts: [10, 22, 10], teaserCount: 0,
+    method: 'gabe', methodBeats: {},
     /* pos = where he left off, so any script reopens on the exact card. */
     pos: { step: 0, act1: 0, act2: 0, act3: 0, act4: 0, act5: 0, char: 0, draft: 0 },
     updatedAt: '',
     story: { logline: '', hero: '', want: '', need: '', antagonist: '', stakes: '',
-             ending: '', endingWhy: '', theme: '', whyGenre: '', seasonArc: '', byline: 'Gabe Arredondo' },
+             ending: '', endingWhy: '', theme: '', whyGenre: '', seasonArc: '', byline: 'Gabe Arredondo',
+             moralArgument: '' },
     chars: {
       pro:  { name: '', want: '', need: '', talk: '', conflict: '', arcBegin: '', arcMid: '', arcEnd: '' },
       ant:  { name: '', want: '', need: '', talk: '', conflict: '', arcBegin: '', arcMid: '', arcEnd: '' },
@@ -147,6 +284,15 @@ function normalize(db) {
     if (typeof s.id !== 'number' || seenIds[s.id]) s.id = si + 1;
     seenIds[s.id] = true;
     if (!FORMATS[s.format]) s.format = 'feature';
+    /* Methods: old scripts predate the picker — they are Gabe's
+       template, with their 6 beats intact. Never drop a method's
+       text when normalizing. */
+    if (!methodDef(s.method) || s.method !== methodDef(s.method).id) s.method = 'gabe';
+    if (!s.methodBeats || typeof s.methodBeats !== 'object' || Array.isArray(s.methodBeats)) s.methodBeats = {};
+    if (!s.beats || typeof s.beats !== 'object') s.beats = {};
+    ['cold', 'inciting', 'pp1', 'midpoint', 'allIsLost', 'climax'].forEach(function (k) {
+      if (typeof s.beats[k] !== 'string') s.beats[k] = '';
+    });
     if (s.tvLength !== '30' && s.tvLength !== '60') s.tvLength = '60';
     if (typeof s.acts !== 'number' || s.acts < 1 || s.acts > 5) s.acts = FORMATS[s.format].actsDefault;
     if (!Array.isArray(s.actCounts) || s.actCounts.length !== s.acts) {
@@ -170,6 +316,7 @@ function normalize(db) {
     if (!s.story) s.story = {};
     if (typeof s.story.byline !== 'string') s.story.byline = 'Gabe Arredondo';
     if (typeof s.story.seasonArc !== 'string') s.story.seasonArc = '';
+    if (typeof s.story.moralArgument !== 'string') s.story.moralArgument = '';
     ['pro', 'ant', 'sup1', 'sup2', 'sup3'].forEach(function (k) {
       if (!s.chars) s.chars = {};
       if (!s.chars[k]) s.chars[k] = {};
@@ -1065,11 +1212,13 @@ function field(path, label, hint, tag, opts) {
   }
   return '<label>' + label + h + '<input type="text" data-path="' + path + '" value="' + esc(val) + '"></label>';
 }
-/* Outline progress: story (7) + beats (6) + scenes with a "what happens". */
+/* Outline progress: story (7) + this method's beats/steps/cards +
+   scenes with a "what happens". Only the current method counts — a
+   Save the Cat script is 7 + 15 + scenes, not 7 + 6 + 15 + scenes. */
 function progressFor(s) {
-  var filled = 0, total = 0;
+  var filled = 0, total = 0, md = methodDefFor(s);
   ['logline', 'hero', 'want', 'need', 'antagonist', 'stakes', 'theme'].forEach(function (k) { total++; if (s.story[k]) filled++; });
-  ['cold', 'inciting', 'pp1', 'midpoint', 'allIsLost', 'climax'].forEach(function (k) { total++; if (s.beats[k]) filled++; });
+  md.steps.forEach(function (st) { total++; if (methodBeatValue(s, st, md)) filled++; });
   s.scenes.forEach(function (sc) { total++; if (sc.happens) filled++; });
   return { filled: filled, total: total, pct: Math.round(100 * filled / total) };
 }
@@ -1089,7 +1238,8 @@ function scriptStatus(s) {
 }
 /* Wizard steps are built from the script's own act count. */
 function wizardSteps(s) {
-  var steps = [{ id: 'story', label: 'Story' }, { id: 'characters', label: 'Characters' }, { id: 'beats', label: '6 Beats' }];
+  var md = methodDefFor(s);
+  var steps = [{ id: 'story', label: 'Story' }, { id: 'characters', label: 'Characters' }, { id: 'beats', label: md.steps.length + ' ' + md.unit }];
   for (var a = 1; a <= s.acts; a++) steps.push({ id: 'act' + a, label: actStepLabel(s, a), act: a });
   steps.push({ id: 'outline', label: 'Outline' }, { id: 'draft', label: 'Draft' });
   return steps;
@@ -1267,6 +1417,16 @@ function formatPickerHtml(s) {
   return '<label>What are you writing?<span class="hint">Feature = acts you pick. TV Pilot = a teaser, then acts with act breaks. Streaming = one flow, no act breaks.</span></label>' +
     '<div class="btnrow">' + btns + '</div>';
 }
+function methodPickerHtml(s) {
+  var md = methodDefFor(s);
+  var btns = METHODS.map(function (m) {
+    return '<button type="button" class="' + (s.method === m.id ? 'primary' : '') + '" data-method="' + m.id + '">' + esc(m.label) + '</button>';
+  }).join('');
+  return '<label>Which method are you writing with?<span class="hint">One per script — it only changes the Beats step. Switching never deletes what you wrote; each method keeps its own beats.</span></label>' +
+    '<div class="btnrow">' + btns + '</div>' +
+    '<p class="muted">' + esc(md.label) + ' — ' + esc(md.book) + '. ' + esc(md.blurb) + '</p>' +
+    '<p class="muted">McKee’s Story principles ride along with any method — short notes on Story, Characters, and Draft.</p>';
+}
 function actPickerHtml(s) {
   if (s.format === 'streaming') {
     return '<p class="muted">Streaming — 1 continuous arc, no act breaks. One flow from cold open to outro.</p>';
@@ -1292,6 +1452,7 @@ function stepStory(s) {
     '<p class="sub">Shitty first draft — you can make it better later.</p>' +
     field('title', 'Title') +
     formatPickerHtml(s) +
+    methodPickerHtml(s) +
     tvLengthPickerHtml(s) +
     actPickerHtml(s) +
     field('genre', 'Genre', '', 'select', GENRES) +
@@ -1305,6 +1466,9 @@ function stepStory(s) {
     field('story.ending', 'How it ends', 'The last image. Short.', 'textarea') +
     field('story.endingWhy', 'Why this ending', 'Why does it have to end this way?', 'textarea') +
     field('story.theme', 'Theme — what is it about, really?', 'One sentence, plain words.', 'textarea') +
+    (s.method === 'truby' ? field('story.moralArgument', 'Moral argument (Truby)', 'What two values are fighting, and which one wins?', 'textarea') : '') +
+    mckeeDetails('Controlling idea', 'What value changes, and what does the ending prove? One sentence: [value] changes from [X] to [Y] because [choice].') +
+    mckeeDetails('Want vs. need', 'The hero’s conscious want drives the plot; their unconscious need is what the story is really about. The gap between expectation and result is where a scene turns.') +
     field('story.whyGenre', 'Why this genre', 'Why is THIS story a ' + (s.genre || 'script') + '?', 'textarea') +
     field('story.byline', 'Written by (title page)', 'The name on the script’s title page.', 'textarea') +
     '</div>';
@@ -1345,22 +1509,68 @@ function stepCharacters(s) {
   var chips = CHAR_DEFS.map(function (d, i) {
     return '<button type="button" data-jump-char="' + i + '"' + (i === idx ? ' class="on"' : '') + '>' + d.short + '</button>';
   }).join('');
-  return '<div class="card"><h2>Characters</h2><p class="sub">Five cards — hero, opposition, three supporting. Each one has an arc: beginning, middle, end.</p></div>' +
+  return '<div class="card"><h2>Characters</h2><p class="sub">Five cards — hero, opposition, three supporting. Each one has an arc: beginning, middle, end.</p>' +
+    (s.method === 'truby' ? '<p class="muted">Truby: the opponent should be the person best able to attack the hero’s weakness, not just the strongest villain.</p>' : '') +
+    mckeeDetails('The gap', 'Every scene should have a gap between what the hero expects and what actually happens. No gap, no turn — cut the scene or rewrite it.') +
+    '</div>' +
     '<div class="chips">' + chips + '</div>' + charCard(CHAR_DEFS[idx], idx, s);
 }
 
-/* Step 3 — The six beats of the starter template. */
+/* One field per beat/step of the current method. Gabe's 6 beats live in
+   s.beats; every other method's steps live in s.methodBeats. */
+function methodBeatField(s, step, md, n) {
+  var tag = methodPageTag(s, step);
+  var label = (n ? n + '. ' : '') + step.label + (tag ? ' — ' + tag : '');
+  return field(methodBeatPath(step, md), label, step.hint, 'textarea');
+}
+/* Step 3 — Beats / Cards / Steps / Stages, per the script's method.
+   Typing here only ever updates the field (input event) — no re-render,
+   no scroll-to-top — same as every other step. */
 function stepBeats(s) {
-  return '<div class="card"><h2>The six beats</h2>' +
-    '<p class="sub">The starter template: cold open → setup → big turn/scare at midpoint → short outro.</p>' +
-    '<div class="rule">Shitty-draft rules: no rewriting a beat mid-draft, no perfect first lines, no dialogue before the outline is done. Keep moving. You can fix it in cleanup week.</div>' +
-    field('beats.cold', '1. Cold Open', 'What hooks us in the first page? What do we see first? The title card lands here.', 'textarea') +
-    field('beats.inciting', '2. Inciting Incident', 'What wrecks the normal world and forces the hero to act? (Around scene 7.)', 'textarea') +
-    field('beats.pp1', '3. Plot Point 1 — into Act 2', 'The decision they can’t take back. The door locks.', 'textarea') +
-    field('beats.midpoint', '4. Midpoint — the big turn / scare', 'The biggest turn or scare, right in the middle. False win or false loss — the plan flips.', 'textarea') +
-    field('beats.allIsLost', '5. All Is Lost', 'The lowest point. The flaw costs them everything.', 'textarea') +
-    field('beats.climax', '6. Climax + Outro', 'The final showdown, then a short outro. The last image should answer the opening.', 'textarea') +
-    '</div>';
+  var md = methodDefFor(s);
+  var h;
+  if (md.id === 'gabe') {
+    h = '<div class="card"><h2>The six beats</h2>' +
+      '<p class="sub">The starter template: cold open → setup → big turn/scare at midpoint → short outro.</p>';
+  } else {
+    h = '<div class="card"><h2>' + md.steps.length + ' ' + md.unit + ' — ' + esc(md.label) + '</h2>' +
+      '<p class="sub">' + esc(md.book) + ' · ' + esc(md.blurb) + '</p>';
+  }
+  h += '<div class="rule">Shitty-draft rules: no rewriting a beat mid-draft, no perfect first lines, no dialogue before the outline is done. Keep moving. You can fix it in cleanup week.</div>' +
+    '<p class="muted">Switching method never deletes what you wrote — each method keeps its own beats.</p>' +
+    '<div class="btnrow">' + METHODS.map(function (m) {
+      return '<button type="button" class="small' + (s.method === m.id ? ' primary' : '') + '" data-method="' + m.id + '">' + esc(m.label) + '</button>';
+    }).join('') + '</div>';
+  if (md.id === 'gabe') {
+    /* Labels and hints unchanged from before methods existed. */
+    h += field('beats.cold', '1. Cold Open', 'What hooks us in the first page? What do we see first? The title card lands here.', 'textarea') +
+      field('beats.inciting', '2. Inciting Incident', 'What wrecks the normal world and forces the hero to act? (Around scene 7.)', 'textarea') +
+      field('beats.pp1', '3. Plot Point 1 — into Act 2', 'The decision they can’t take back. The door locks.', 'textarea') +
+      field('beats.midpoint', '4. Midpoint — the big turn / scare', 'The biggest turn or scare, right in the middle. False win or false loss — the plan flips.', 'textarea') +
+      field('beats.allIsLost', '5. All Is Lost', 'The lowest point. The flaw costs them everything.', 'textarea') +
+      field('beats.climax', '6. Climax + Outro', 'The final showdown, then a short outro. The last image should answer the opening.', 'textarea');
+  } else if (md.id === 'truby') {
+    /* 7 key steps first, in story order; the other 15 live inside one
+       <details> so a phone screen isn't 22 textareas at once. Every
+       step appears exactly once, so no two fields share a data-path. */
+    h += '<h3>7 key steps — the spine</h3>';
+    md.steps.forEach(function (st, i) {
+      if (st.keyStep) h += methodBeatField(s, st, md, i + 1);
+    });
+    h += '<details class="collap"><summary>Show the other 15 steps</summary>';
+    md.steps.forEach(function (st, i) {
+      if (!st.keyStep) h += methodBeatField(s, st, md, i + 1);
+    });
+    h += '</details>';
+  } else if (md.groups) {
+    md.groups.forEach(function (g) {
+      h += '<h3>' + esc(g.title) + '</h3>';
+      for (var i = g.from; i <= g.to; i++) h += methodBeatField(s, md.steps[i], md, i + 1);
+    });
+  } else {
+    md.steps.forEach(function (st, i) { h += methodBeatField(s, st, md, i + 1); });
+  }
+  return h + '</div>';
 }
 
 /* Steps 4+ — one act's scene cards, one at a time. Fully editable: add,
@@ -1479,6 +1689,19 @@ function groupSceneIndices(s, key) {
   for (var j = 0; j < (s.actCounts[key - 1] || 0); j++) out2.push(start + j);
   return out2;
 }
+/* Outline's beats section lists the current method's steps, not always
+   the six. Gabe's rendering is unchanged from before methods existed. */
+function outlineBeatsHtml(s) {
+  var md = methodDefFor(s);
+  if (md.id === 'gabe') {
+    return '<h3>Six beats</h3><p>' +
+      ['Cold Open: ' + s.beats.cold, 'Inciting Incident: ' + s.beats.inciting, 'Plot Point 1: ' + s.beats.pp1,
+       'Midpoint: ' + s.beats.midpoint, 'All Is Lost: ' + s.beats.allIsLost, 'Climax: ' + s.beats.climax]
+        .map(function (b) { return esc(b); }).join('<br>') + '</p>';
+  }
+  return '<h3>' + md.steps.length + ' ' + md.unit.toLowerCase() + ' — ' + esc(md.label) + '</h3><p>' +
+    md.steps.map(function (st) { return esc(st.label + ': ' + methodBeatValue(s, st, md)); }).join('<br>') + '</p>';
+}
 function stepOutline(s) {
   var p = progressFor(s), dp = draftStatsFor(s);
   var h = '<div class="card"><h2>Outline — read it back</h2>' +
@@ -1494,14 +1717,12 @@ function stepOutline(s) {
   h += '<div class="card"><h2>' + esc(s.title || 'Untitled') + '</h2>' +
     (s.story.logline ? '<p><b>Logline:</b> ' + esc(s.story.logline) + '</p>' : '') +
     (s.story.theme ? '<p><b>Theme:</b> ' + esc(s.story.theme) + '</p>' : '') +
+    (s.story.moralArgument ? '<p><b>Moral argument:</b> ' + esc(s.story.moralArgument) + '</p>' : '') +
     (s.story.seasonArc ? '<p><b>Season arc:</b> ' + esc(s.story.seasonArc) + '</p>' : '') +
     '<p><b>Hero:</b> ' + esc(s.story.hero || '—') + ' · <b>Wants:</b> ' + esc(s.story.want || '—') + ' · <b>Needs:</b> ' + esc(s.story.need || '—') + '</p>' +
     '<p><b>Antagonist:</b> ' + esc(s.story.antagonist || '—') + ' · <b>Stakes:</b> ' + esc(s.story.stakes || '—') + '</p>' +
     '<p><b>Ending:</b> ' + esc(s.story.ending || '—') + (s.story.endingWhy ? ' — ' + esc(s.story.endingWhy) : '') + '</p>' +
-    '<h3>Six beats</h3><p>' +
-    ['Cold Open: ' + s.beats.cold, 'Inciting Incident: ' + s.beats.inciting, 'Plot Point 1: ' + s.beats.pp1,
-     'Midpoint: ' + s.beats.midpoint, 'All Is Lost: ' + s.beats.allIsLost, 'Climax: ' + s.beats.climax]
-      .map(function (b) { return esc(b); }).join('<br>') + '</p>' +
+    outlineBeatsHtml(s) +
     printCharacters(s) + '</div>';
   printActGroups(s).forEach(function (g) {
     var idxs = groupSceneIndices(s, g.key);
@@ -1698,6 +1919,8 @@ function stepDraft(s) {
     '<p class="stat"><b>' + Math.round(dp.pages) + '</b> pages drafted · <b>' + dp.words.toLocaleString() + '</b> words · target ' + tp + ' pages</p>' +
     '<div class="progress"><div style="width:' + Math.min(100, Math.round(100 * dp.pages / tp)) + '%"></div></div>' +
     '<p class="muted">Scene headings are in caps. Character names centered, dialogue underneath — same as a real script.</p>' +
+    mckeeDetails('A scene is a turning point', 'A scene that doesn’t change a value — love/hate, trust/distrust, life/death — is a scene to cut.') +
+    mckeeDetails('Crisis, then climax', 'Crisis is the hardest choice; climax is the action taken. Don’t skip the choice to get to the action.') +
     '<div class="btnrow"><button type="button" data-print="draft-all">🖨 Print / Save script as PDF</button>' +
     '<button type="button" data-preview="draft">👁 Preview script pages</button>' +
     '<button type="button" class="small" data-act="goto-outline">📄 Back to outline</button></div></div>';
@@ -2052,6 +2275,7 @@ document.addEventListener('click', function (e) {
     el.textContent = hideNow ? 'Show scene notes' : 'Hide scene notes';
     return;
   }
+  if (el.dataset.method) { setMethod(s, el.dataset.method); save(); renderStep(); return; }
   if (el.dataset.format) { setFormat(s, el.dataset.format); save(); renderStep(); return; }
   if (el.dataset.tvlength) { setTvLength(s, el.dataset.tvlength); save(); renderStep(); return; }
   if (el.dataset.acts) { setActs(s, parseInt(el.dataset.acts, 10)); save(); renderStep(); return; }

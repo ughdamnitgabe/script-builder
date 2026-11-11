@@ -197,3 +197,12 @@ body.show-print #print-view .sp-pagenum { position: absolute; top: 0.5in; right:
   #print-view.script-print .sp-pagenum { position: absolute; top: -0.5in; right: 0; }
   #print-view.script-print .title-page { page-break-after: always; }
 }
+
+/* ---- Methods: McKee teaching cards + Truby "show the rest" collapse.
+   Native <details>: no JS, no re-render, tap to open, stays shut by
+   default so it never blocks typing. ---- */
+.mckee { background: #eef4ef; border: 1.5px solid #9ec5ab; border-radius: 10px; padding: 10px 12px; margin: 12px 0; }
+.mckee summary { font-weight: 700; cursor: pointer; }
+.mckee p { margin: 6px 0 0; }
+.collap { border: 1.5px solid #bbb; border-radius: 10px; padding: 10px 12px; margin: 12px 0; }
+.collap summary { font-weight: 700; cursor: pointer; }
